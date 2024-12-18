@@ -11,8 +11,8 @@ import custom_op
 import time
 
 errors_matrix = torch.from_numpy(np.load('res_diff_matrix8192.npy')).float().to("cuda")
-derivative_matrix_y = torch.from_numpy(np.load('derivative_matrix_y.npy')).float().to("cuda")
-derivative_matrix_x = torch.from_numpy(np.load('derivative_matrix_x.npy')).float().to("cuda")
+derivative_matrix_y = torch.from_numpy(np.load('derivative_matrix_y_non_scaled.npy')).float().to("cuda")
+derivative_matrix_x = torch.from_numpy(np.load('derivative_matrix_x_non_scaled.npy')).float().to("cuda")
 
 def quantize(input:torch.Tensor,def_scale):
     input_clamped = torch.clamp(input,min = -1, max = 6)
@@ -20,25 +20,34 @@ def quantize(input:torch.Tensor,def_scale):
     quantized_tensor = torch.round(input_clamped/scale)
     return quantized_tensor, scale
 
+def quantize_precise(input:torch.Tensor,def_scale):
+    max= torch.max(input)
+    min = torch.min(input)
+    scale = (max - min) / float(def_scale)
+    quantized_tensor = torch.round(input / scale)
+    return quantized_tensor, scale
+
 
 ####### NETWORK DEFINITION #######
-def gradient_error_inputs(input:torch.Tensor,kernel:torch.Tensor, grad_ouput:torch.Tensor,stride,padding):
+def gradient_error_inputs(input:torch.Tensor,kernel:torch.Tensor, grad_ouput:torch.Tensor,stride,padding, filter_scale):
+    derivative_matrix_x_scaled = (derivative_matrix_x * (filter_scale / 2)).contiguous()
     batch_size, in_channels, start_height, start_width = input.size()
     out_channels, _, kernel_height, kernel_width = kernel.size()    
     input_unfolded = nn.functional.unfold(input,kernel_size=(kernel_height, kernel_width),stride=stride).transpose(1,2)
     kernel_flatten = kernel.view(out_channels, -1).T
-    output = torch.ops.custom_op.derivate(input_unfolded.contiguous(),kernel_flatten.contiguous(),derivative_matrix_x.contiguous(),grad_ouput.contiguous()).contiguous()
+    output = torch.ops.custom_op.derivate(input_unfolded.contiguous(),kernel_flatten.contiguous(),derivative_matrix_x_scaled,grad_ouput.contiguous()).contiguous()
     output = torch.sum(output, dim=1,keepdim=False)
     output = output.transpose(1,2).contiguous()
     output = nn.functional.fold(output, output_size=(start_height - (2 * padding[0]) , start_width - (2 * padding[1])), kernel_size=(kernel_height, kernel_width), stride=stride, padding= padding)
     return output
 
-def gradient_error_weights(input:torch.Tensor,kernel:torch.Tensor, grad_ouput:torch.Tensor,stride):
+def gradient_error_weights(input:torch.Tensor,kernel:torch.Tensor, grad_ouput:torch.Tensor,stride, act_scale):
+    derivative_matrix_y_scaled = (derivative_matrix_y * (act_scale / 2) ).contiguous()
     batch_size, in_channels, _, _ = input.size()
     out_channels, _, kernel_height, kernel_width = kernel.size()    
     input_unfolded = nn.functional.unfold(input,kernel_size=(kernel_height, kernel_width),stride=stride).transpose(1,2)
     kernel_flatten = kernel.view(out_channels, -1).T
-    output = torch.ops.custom_op.derivate(input_unfolded.contiguous(),kernel_flatten.contiguous(),derivative_matrix_y.contiguous(),grad_ouput.contiguous()).contiguous()
+    output = torch.ops.custom_op.derivate(input_unfolded.contiguous(),kernel_flatten.contiguous(),derivative_matrix_y_scaled,grad_ouput.contiguous()).contiguous()
     output = torch.sum(output, dim=0,keepdim=False)
     output = output/batch_size
     output = torch.sum(output, dim=1,keepdim=False)
@@ -76,8 +85,10 @@ class CustomConv2d(Function):
         ctx.padding = padding
         m=nn.ZeroPad2d((padding[1],padding[1],padding[0],padding[0]))
         input_padded=m(input) 
-        quantized_act, act_scale = quantize(input_padded,255)
-        quantized_filter, filter_scale = quantize(weight,255)
+        quantized_act, act_scale = quantize_precise(input_padded,255)
+        quantized_filter, filter_scale = quantize_precise(weight,255)
+        ctx.quantized_act = quantized_act
+        ctx.quantized_filter = quantized_filter
         ctx.act_scale = act_scale
         ctx.filter_scale = filter_scale
         # Eseguiamo la convoluzione (utilizzeremo la funzione nn.Conv2d per semplicità)
@@ -85,34 +96,35 @@ class CustomConv2d(Function):
     
     @staticmethod
     def backward(ctx, grad_output):
-        input, weight, bias = ctx.saved_tensors
+        input, weight, _ = ctx.saved_tensors
         stride = ctx.stride
         padding = ctx.padding
         m = nn.ZeroPad2d((padding[1], padding[1], padding[0], padding[0]))
-        input_padded = m(input)
-        quantized_act, _ = quantize(input_padded, 255)
-        quantized_filter, _ = quantize(weight, 255)
-        
+        """input_padded = m(input)
+        quantized_act = ctx.quantized_act
+        quantized_filter = ctx.quantized_filter
+        act_scale = ctx.act_scale
+        filter_scale = ctx.filter_scale
         # Calcolo ottimizzato
         error_derivate_weights = gradient_error_weights(
-            quantized_act.contiguous(), quantized_filter.contiguous(), grad_output, stride
-        )
+            quantized_act.contiguous(), quantized_filter.contiguous(), grad_output, stride, act_scale
+        )"""
         grad_weight = torch.nn.grad.conv2d_weight(
             input, weight.shape, grad_output, stride, padding
-        ) - error_derivate_weights
+        )#- error_derivate_weights
         
         # Libera i tensor non necessari
-        del error_derivate_weights
+        #del error_derivate_weights
         
-        error_derivate_inputs = gradient_error_inputs(
-            quantized_act.contiguous(), quantized_filter.contiguous(), grad_output, stride, padding
-        )
+        """error_derivate_inputs = gradient_error_inputs(
+            quantized_act.contiguous(), quantized_filter.contiguous(), grad_output, stride, padding, filter_scale
+        )"""
         grad_input = torch.nn.grad.conv2d_input(
             input.shape, weight, grad_output, stride, padding
-        ) - error_derivate_inputs
+        ) #- error_derivate_inputs
         
         # Libera i tensor non necessari
-        del error_derivate_inputs, quantized_act, quantized_filter, input_padded
+        #del error_derivate_inputs, quantized_act, quantized_filter, input_padded
         torch.cuda.empty_cache()  # Svuota esplicitamente la cache della GPU
         
         grad_bias = grad_output.sum((0, 2, 3))
@@ -135,13 +147,7 @@ class CNNModel(nn.Module):
             #nn.Conv2d(16, 32, kernel_size=3,stride=1,padding=1),
             Conv2d_custom(16, 32, 3,(1,1),(1,1)),
             nn.BatchNorm2d(32),
-            nn.ReLU(),
-            Conv2d_custom(32, 64, 3,(1,1),(1,1)),
-            nn.BatchNorm2d(64),
-            nn.ReLU(),
-            Conv2d_custom(64, 32, 3,(1,1),(1,1)),
-            nn.BatchNorm2d(32),
-            nn.ReLU()         
+            nn.ReLU()      
         )
         self.dense_layers=nn.Sequential(
             nn.Linear(25088 ,64),
@@ -200,7 +206,7 @@ def train(dataloader, model, loss_fn, optimizer):
         if(batch % 25 == 0):
             loss, current = loss.item(), (batch + 1) * len(X)
             #print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
-            print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]",file= open("accur_train_corrected_big.txt","a"))
+            print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]",file= open("accur_train_no_corrected_new_quantization.txt","a"))
 
 def test(dataloader, model, loss_fn):
     size = len(dataloader.dataset)
@@ -216,7 +222,7 @@ def test(dataloader, model, loss_fn):
     test_loss /= num_batches
     correct /= size
     #print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n")
-    print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n",file = open("accur_test_corrected_big.txt","a"))
+    print(f"Test Error: \n Accuracy: {(100*correct):>0.1f}%, Avg loss: {test_loss:>8f} \n",file = open("accur_test_no_corrected_new_quantization.txt","a"))
 
 epochs = 30
 for t in range(epochs):

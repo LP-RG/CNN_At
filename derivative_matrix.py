@@ -46,5 +46,48 @@ def get_derivative_matrix(k):
     np.save('derivative_matrix_x.npy', derivative_matrix_x)
 
 
-get_derivative_matrix(1)
+def get_derivative_matrix_non_scaled(k):
+    errors_matrix = np.load('res_diff_matrix8192.npy').astype(np.float32)
+    derivative_matrix_y = np.zeros_like(errors_matrix)
+    derivative_matrix_x = np.zeros_like(errors_matrix)
+    for x in range(0,256): 
+        if(x == k):
+            for y in range(0,256):
+                derivative_matrix_x[x][y] =  (errors_matrix[x+k][y] - errors_matrix[x][y])
+        elif(x < k):
+           for y in range(0,256):
+                derivative_matrix_x[x][y] =  0   
+        elif(x == 255-k):
+            for y in range(0,256):
+                derivative_matrix_x[x][y] = (errors_matrix[x][y] - errors_matrix[x-k][y])
+        elif(x > 255-k):
+            for y in range(0,256):
+                derivative_matrix_x[x][y] = 0
+        else:
+            for y in range(0,256):
+                if(errors_matrix[x][y]<errors_matrix[x-k][y] and errors_matrix[x][y]<errors_matrix[x+k][y]):
+                    derivative_matrix_x[x][y]=0
+                else:derivative_matrix_x[x][y] = (errors_matrix[x+k][y] - errors_matrix[x-k][y])
+    for y in range(0,256): 
+        if(y == k):
+            for x in range(0,256):
+                derivative_matrix_y[x][y] =  (errors_matrix[x][y + k] - errors_matrix[x][y])
+        elif(y < k):
+           for x in range(0,256):
+                derivative_matrix_y[x][y] =  0 
+        elif(y == 255-k):
+            for x in range(0,256):
+                derivative_matrix_y[x][y] = (errors_matrix[x][y] - errors_matrix[x][y - k])
+        elif(y > 255-k):
+            for x in range(0,256):
+                derivative_matrix_y[x][y] = 0
+        else:
+            for x in range(0,256):
+                if(errors_matrix[x][y]<errors_matrix[x][y-k] and errors_matrix[x][y]<errors_matrix[x][y+k]):
+                    derivative_matrix_y[x][y] = 0
+                else:derivative_matrix_y[x][y] = (errors_matrix[x][y + k] - errors_matrix[x][y-k])
+    np.save('derivative_matrix_y_non_scaled.npy', derivative_matrix_y)
+    np.save('derivative_matrix_x_non_scaled.npy', derivative_matrix_x)
 
+
+get_derivative_matrix_non_scaled(1)
