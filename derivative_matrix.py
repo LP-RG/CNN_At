@@ -51,16 +51,16 @@ def get_derivative_matrix_non_scaled(k):
     derivative_matrix_y = np.zeros_like(errors_matrix)
     derivative_matrix_x = np.zeros_like(errors_matrix)
     for x in range(0,256): 
-        if(x == k):
+        if(x == k - 1):
             for y in range(0,256):
                 derivative_matrix_x[x][y] =  (errors_matrix[x+k][y] - errors_matrix[x][y])
-        elif(x < k):
+        elif(x < k - 1):
            for y in range(0,256):
                 derivative_matrix_x[x][y] =  0   
-        elif(x == 255-k):
+        elif(x == 256-k):
             for y in range(0,256):
                 derivative_matrix_x[x][y] = (errors_matrix[x][y] - errors_matrix[x-k][y])
-        elif(x > 255-k):
+        elif(x > 256-k):
             for y in range(0,256):
                 derivative_matrix_x[x][y] = 0
         else:
@@ -69,16 +69,16 @@ def get_derivative_matrix_non_scaled(k):
                     derivative_matrix_x[x][y]=0
                 else:derivative_matrix_x[x][y] = (errors_matrix[x+k][y] - errors_matrix[x-k][y])
     for y in range(0,256): 
-        if(y == k):
+        if(y == k - 1):
             for x in range(0,256):
                 derivative_matrix_y[x][y] =  (errors_matrix[x][y + k] - errors_matrix[x][y])
-        elif(y < k):
+        elif(y < k - 1):
            for x in range(0,256):
                 derivative_matrix_y[x][y] =  0 
-        elif(y == 255-k):
+        elif(y == 256-k):
             for x in range(0,256):
                 derivative_matrix_y[x][y] = (errors_matrix[x][y] - errors_matrix[x][y - k])
-        elif(y > 255-k):
+        elif(y > 256-k):
             for x in range(0,256):
                 derivative_matrix_y[x][y] = 0
         else:
@@ -88,6 +88,6 @@ def get_derivative_matrix_non_scaled(k):
                 else:derivative_matrix_y[x][y] = (errors_matrix[x][y + k] - errors_matrix[x][y-k])
     np.save('derivative_matrix_y_non_scaled.npy', derivative_matrix_y)
     np.save('derivative_matrix_x_non_scaled.npy', derivative_matrix_x)
+    return derivative_matrix_x,derivative_matrix_y
 
-
-get_derivative_matrix_non_scaled(1)
+print(get_derivative_matrix_non_scaled(1))
