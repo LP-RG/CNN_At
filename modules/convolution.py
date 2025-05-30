@@ -22,6 +22,7 @@ class Conv2d_custom(nn.Conv2d):
                 bias,
                 conv_type,
                 bit_width,
+                multiplier_matrix,
                 signed = False,
                 name = None):
         
@@ -34,6 +35,7 @@ class Conv2d_custom(nn.Conv2d):
         self.weight_quant_max = torch.tensor(((1 << bit_width) - 1), dtype=torch.float32)
         self.signed = signed
         self.bit_width = bit_width
+        self.multiplier_matrix = multiplier_matrix
 
         self.name = name
         self.conv_type = conv_type
@@ -93,5 +95,6 @@ class Conv2d_custom(nn.Conv2d):
                                     self.weight_zp_neg,
                                     self.signed,
                                     self.bit_width,
-                                    self.name) 
+                                    self.name,
+                                    self.multiplier_matrix) 
 

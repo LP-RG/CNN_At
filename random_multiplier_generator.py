@@ -1,9 +1,12 @@
+import os
 import random
 import numpy as np
 import multiplier_outputs_plotting
 
 multiplier_folder = "./random_multipliers"
 
+if not os.path.exists(multiplier_folder):
+    os.mkdir(multiplier_folder)
 
 def generate_random_multipliers(bit_width,iter_number):
     #generate exact multiplier
