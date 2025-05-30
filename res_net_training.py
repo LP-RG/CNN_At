@@ -69,10 +69,10 @@ def test(model):
 train_loader,test_loader, _ = data_loader.get_datasets(64)
 device = 'cuda'
 
-def new_training_method(pretrained = False, retrain = False, conv_type = 1, bit_width = 8, signed = False):
+def new_training_method(multiplier_matrix, pretrained = False, retrain = False, conv_type = 1, bit_width = 8, signed = False, epochs = 5):
     print(f"Network training with parameters: conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}")
     if(not pretrained):
-        model = resnet.ResNet8(num_classes=10,conv_type=1,bit_width=bit_width,signed=signed).to(device)
+        model = resnet.ResNet8(multiplier_matrix, num_classes=10,conv_type=1,bit_width=bit_width,signed=signed).to(device)
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.SGD(
                 model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4
@@ -91,13 +91,13 @@ def new_training_method(pretrained = False, retrain = False, conv_type = 1, bit_
     if(conv_type == 1):
         try:
             print("Loading pretrained model")	
-            model = resnet.ResNet8(num_classes=10,conv_type=1,bit_width=bit_width,signed=signed).to(device)
+            model = resnet.ResNet8(multiplier_matrix, num_classes=10,conv_type=1,bit_width=bit_width,signed=signed).to(device)
             model.load_state_dict(torch.load(trained_models_path + 'resnet.pth', weights_only=True))
             test(model)
             return
         except:
             raise RuntimeError("No pretrained model found")
-    model = resnet.ResNet8(num_classes=10,conv_type=conv_type,bit_width=bit_width,signed=signed).to(device)
+    model = resnet.ResNet8(multiplier_matrix, num_classes=10,conv_type=conv_type,bit_width=bit_width,signed=signed).to(device)
     if(conv_type != 1):
         try:
             if(conv_type == 2):
@@ -121,7 +121,7 @@ def new_training_method(pretrained = False, retrain = False, conv_type = 1, bit_
                     model.parameters(), lr=0.0001
                 )
             scheduler = optim.lr_scheduler.StepLR(optimizer= optimizer, step_size=10, gamma = 0.5)
-            for epoch in range(3):
+            for epoch in range(epochs):
                 print(f"Epoch {epoch + 1}\n-------------------------------")
                 train(epoch, model, optimizer, criterion)
                 current_accuracy = test(model)
@@ -132,7 +132,8 @@ def new_training_method(pretrained = False, retrain = False, conv_type = 1, bit_
             if(conv_type == 2):
                 torch.save(model.state_dict(), trained_models_path + 'resnet_q'+str(bit_width) + '.pth')
 
-            #test(model)
+            # test(model)
         return best_accuracy
 
-#new_training_method(pretrained=True, retrain=True, conv_type=3, bit_width=4, signed=False)
+if __name__ == "__main__":
+    new_training_method("./random_multipliers/0_44.npy", pretrained=True, retrain=True, conv_type=3, bit_width=4, signed=False)
