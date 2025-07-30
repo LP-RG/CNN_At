@@ -12,7 +12,7 @@ class LambdaLayer(nn.Module):
         return self.lambd(features)
     
 class BasicBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, multiplier_matrix, stride=1, conv_type = 1, bit_width = 8, signed =  False, name = "0" ):
+    def __init__(self, in_channels, out_channels, multiplier_matrix, stride=1, conv_type = 1, bit_width = 8, signed =  False, name = "0"):
         super(BasicBlock, self).__init__()
         self.conv1 = cc.Conv2d_custom(in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False,
                                     conv_type=conv_type, bit_width=bit_width, signed= signed, name = name + "_1", multiplier_matrix = multiplier_matrix)
@@ -44,7 +44,7 @@ class ResNet8(nn.Module):
         #Keeping first layer unapproximated
         first_layer_conv_type = conv_type if (conv_type == 1 or conv_type == 5) else 2
         self.conv1 = cc.Conv2d_custom(3, 16, kernel_size=3, stride=1, padding=1, bias=False,
-                                    conv_type=first_layer_conv_type, bit_width=bit_width, signed= signed, name = "s", multiplier_matrix=multiplier_matrix)
+                                    conv_type=conv_type, bit_width=bit_width, signed= signed, name = "s", multiplier_matrix=multiplier_matrix)
         self.bn1 = nn.BatchNorm2d(16)
         self.relu = nn.ReLU(inplace=True)
 

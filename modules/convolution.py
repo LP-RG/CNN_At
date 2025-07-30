@@ -30,7 +30,6 @@ class Conv2d_custom(nn.Conv2d):
         self.activation_observer = observers.MovingAverageMinMaxObserver(q_level="L", out_channels=None)
         self.weight_observer = observers.MinMaxObserver(q_level="L", out_channels=None)
         self.eps = torch.tensor((torch.finfo(torch.float32).eps), dtype=torch.float32)
-        #TODO CHANGE THE WAY MAX IS CALCULATED FOR SIGNED
         self.activation_quant_max = torch.tensor(((1 << bit_width) - 1), dtype=torch.float32)
         self.weight_quant_max = torch.tensor(((1 << bit_width) - 1), dtype=torch.float32)
         self.signed = signed
@@ -54,7 +53,13 @@ class Conv2d_custom(nn.Conv2d):
         
 
     def forward(self, input):
-        #Handling forward operatation for getting heat maps
+        if(self.conv_type == 1):
+            return nn.functional.conv2d(input=input, 
+                                        weight=self.weight,
+                                        bias=self.bias,
+                                        stride=self.stride,
+                                        padding=self.padding)
+        """#Handling forward operatation for getting heat maps
         if(self.training and self.conv_type == 5):
             self.conv2d_op = functions.QuantizedConv2d
         elif(not self.training and (self.conv_type == 5)):
@@ -64,7 +69,7 @@ class Conv2d_custom(nn.Conv2d):
                                         weight=self.weight,
                                         bias=self.bias,
                                         stride=self.stride,
-                                        padding=self.padding)
+                                        padding=self.padding)"""
         #Updating min max of the Observes
         if(self.training):
             self.activation_observer(input)

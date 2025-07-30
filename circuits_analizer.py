@@ -1,52 +1,73 @@
 from vpadanalyzer.synthesis import Synthesis
-import sub_xpat_circuits_generator
 import os
-
-multipliers_folder = "./mult_folder"
-
+import sys
+import sub_xpat_circuits_generator
+import time
+import multiplier_outputs_plotting
+import sub_x_pat_simulator
 
 def circuits_analizer(input_path):
+    """
+    Analizza un circuito e restituisce la sua area, potenza e ritardo.
+    """
     area = Synthesis.area(input_path)
     power = Synthesis.power(input_path)
     delay = Synthesis.delay(input_path)
-    print(f"File: {input_path}, Area = {area}, Power = {power}, Delay = {delay}")
-    return area
+    return {"file": os.path.basename(input_path), "area": area, "power": power, "delay": delay}
 
-def analyze_multipliers(multipliers_folder):
-    min_area = float('inf')  
-    file_with_min_area = None
-
+def create_matrices(multipliers_folder, bitwidth, output_plot_path):
     if not os.path.isdir(multipliers_folder):
         print(f"Errore: La cartella '{multipliers_folder}' non esiste.")
-        return
-    
-    for filename in os.listdir(multipliers_folder):
+        return []
+    os.makedirs(output_plot_path, exist_ok=True)
+    # Raccoglie i dati di tutti i file
+    for filename in sorted(os.listdir(multipliers_folder)):  # Ordina i file per nome
         input_path = os.path.join(multipliers_folder, filename)
         if os.path.isfile(input_path):
-            current_area = circuits_analizer(input_path)
-            if current_area < min_area:
-                min_area = current_area
-                file_with_min_area_full_path  = input_path
+            name = filename.split(".")[0]
+            sub_xpat_circuits_generator.generate_approx_mult_function(input_path, bitwidth)
+            sub_x_pat_simulator.execute_save(bitwidth,os.path.join(output_plot_path,name + ".npy"))
+            multiplier_outputs_plotting.plots(name,os.path.join(output_plot_path,name + ".npy"),output_plot_path)
 
-    if file_with_min_area_full_path:
-        # Costruisci il nuovo percorso per il file rinominato
-        new_name = "mul_best.v"
-        new_path = os.path.join(multipliers_folder, new_name)
-
-        # Rinominare il file
-        try:
-            os.rename(file_with_min_area_full_path, new_path)
-            print(f"\n--- Analisi Completata ---")
-            print(f"Il file con l'area minore era: **{os.path.basename(file_with_min_area_full_path)}**")
-            print(f"È stato rinominato in: **{new_name}** con un'area di: **{min_area}**")
-        except OSError as e:
-            print(f"Errore durante la ridenominazione del file {os.path.basename(file_with_min_area_full_path)}: {e}")
-    else:
-        print(f"\nNessun file processato nella cartella: {multipliers_folder}")
-    return new_path
+def analyze_multipliers(multipliers_folder):
+    if not os.path.isdir(multipliers_folder):
+        print(f"Errore: La cartella '{multipliers_folder}' non esiste.")
+        return []
+    # Raccoglie i dati di tutti i file
+    multipliers_data = []
+    for filename in sorted(os.listdir(multipliers_folder)):  # Ordina i file per nome
+        input_path = os.path.join(multipliers_folder, filename)
+        if os.path.isfile(input_path):
+            data = circuits_analizer(input_path)
+            multipliers_data.append(data)
+    return multipliers_data
 
 
 if __name__ == "__main__":
-    mult_path = analyze_multipliers(multipliers_folder)
-    sub_xpat_circuits_generator.generate_approx_mult_function(mult_path,4)
+    if(len(sys.argv) != 4):
+        raise NotImplementedError
+    multipliers_folder = sys.argv[1]
+    bitwidth = sys.argv[2]
+    bitwidth = int(bitwidth)
+
+    output_path = sys.argv[3]
+    print("Analisi dei moltiplicatori:")
+
+    results = analyze_multipliers(multipliers_folder)
+    create_matrices(multipliers_folder, bitwidth, output_path)
+    os.remove("sub_x_pat_multiplier.py")
+    if results:
+        print("\n--- Risultati Ordinati per Nome del File ---")
+        for data in results:
+            print(f"File: {data['file']}, Area = {data['area']}, Power = {data['power']}, Delay = {data['delay']}")
+
+        output_filename = "circuits_area_power.txt"
+        output_full_path_file = os.path.join(output_path,output_filename)
+        with open(output_full_path_file, "w") as f:
+            for data in results:
+                f.write(f"File: {data['file']}, Area = {data['area']}, Power = {data['power']}\n")
+        print(f"\nI dati dell'area sono stati scritti nel file '{output_full_path_file}'.")
+
+    
+    
 
