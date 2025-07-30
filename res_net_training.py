@@ -76,6 +76,18 @@ device = 'cuda'
 
 def new_training_method(multiplier_matrix=None, pretrained=False, retrain=False, conv_type=1, bit_width=8, signed=False, epochs=5):
     print(f"Network training with parameters: multiplier_matrix = {multiplier_matrix} conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}")
+    
+    models_dir = trained_models_path.rstrip('/') 
+
+    if not os.path.exists(models_dir):
+        print(f"The model folder '{models_dir}' does not exist. Creating it now...")
+        try:
+            os.makedirs(models_dir)
+            print(f"Folder '{models_dir}' created successfully.")
+        except OSError as e:
+            print(f"Error creating folder '{models_dir}': {e}")
+            return 
+        
     best_accuracy = 0
     if not pretrained:
         model = resnet.ResNet8(multiplier_matrix, num_classes=10, conv_type=1, bit_width=bit_width, signed=signed).to(device)
@@ -98,8 +110,8 @@ def new_training_method(multiplier_matrix=None, pretrained=False, retrain=False,
             model.load_state_dict(torch.load(trained_models_path + 'resnet.pth', weights_only=True))
             test(model)
             return
-        except:
-            raise RuntimeError("No pretrained model found")
+        except Exception as e:
+            raise RuntimeError(f"No pretrained model found for conv_type 1: {e}")
 
     model = resnet.ResNet8(multiplier_matrix, num_classes=10, conv_type=conv_type, bit_width=bit_width, signed=signed).to(device)
     if conv_type != 1:
@@ -108,8 +120,8 @@ def new_training_method(multiplier_matrix=None, pretrained=False, retrain=False,
                 model.load_state_dict(torch.load(trained_models_path + 'resnet.pth', weights_only=True))
             else:
                 model.load_state_dict(torch.load(trained_models_path + 'resnet_q' + str(bit_width) + '.pth', weights_only=True))
-        except:
-            raise RuntimeError("No pretrained model found")
+        except Exception as e: 
+            raise RuntimeError(f"No pretrained model found for conv_type {conv_type}: {e}")
 
         calibration(model)
         if conv_type == 5:
