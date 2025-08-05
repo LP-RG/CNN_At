@@ -10,7 +10,7 @@ import argparse
 import sys
 import os
 trained_models_path = "./trained_models/"
-
+#print(torch.__version__)
 def setup_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -74,8 +74,8 @@ def test(model):
 train_loader, test_loader, _ = data_loader.get_datasets(64)
 device = 'cuda'
 
-def new_training_method(multiplier_matrix=None, pretrained=False, retrain=False, conv_type=1, bit_width=8, signed=False, epochs=5):
-    print(f"Network training with parameters: multiplier_matrix = {multiplier_matrix} conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}")
+def new_training_method(multiplier_matrix=None, pretrained=False, retrain=False, conv_type=1, bit_width=8, signed=False, epochs=5, zone = False):
+    print(f"Network training with parameters: multiplier_matrix = {multiplier_matrix} conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}, zone = {zone}")
     
     models_dir = trained_models_path.rstrip('/') 
 
@@ -113,7 +113,7 @@ def new_training_method(multiplier_matrix=None, pretrained=False, retrain=False,
         except Exception as e:
             raise RuntimeError(f"No pretrained model found for conv_type 1: {e}")
 
-    model = resnet.ResNet8(multiplier_matrix, num_classes=10, conv_type=conv_type, bit_width=bit_width, signed=signed).to(device)
+    model = resnet.ResNet8(multiplier_matrix, num_classes=10, conv_type=conv_type, bit_width=bit_width, signed=signed, zone=zone).to(device)
     if conv_type != 1:
         try:
             if conv_type == 2:
@@ -131,7 +131,10 @@ def new_training_method(multiplier_matrix=None, pretrained=False, retrain=False,
         if retrain:
             best_accuracy = 0
             criterion = nn.CrossEntropyLoss()
-            optimizer = optim.Adam(model.parameters(), lr=0.0001)
+            learning_rate = 0.0001 
+            if(bit_width == 4):
+                learning_rate = 0.001
+            optimizer = optim.Adam(model.parameters(), lr=learning_rate)
             scheduler = optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=10, gamma=0.5)
             start_accuracy = test(model)
             for epoch in range(epochs):
@@ -197,6 +200,12 @@ if __name__ == "__main__":
         default = False,
         help="If set, inputs are treated as signed integers. Default is unsigned."
     )
+    parser.add_argument(
+        "--zone",
+        action="store_true", # This makes it a boolean flag
+        default = False,
+        help="If set, the first layer will use exact multipliers."
+    )
 
     args = parser.parse_args()
 
@@ -230,7 +239,8 @@ if __name__ == "__main__":
             conv_type=args.conv_type, 
             bit_width=args.bit_width, 
             signed=args.signed, 
-            epochs=args.epochs
+            epochs=args.epochs,
+            zone=args.zone
         )
         print(result)
     elif os.path.isdir(input_path):
@@ -247,7 +257,8 @@ if __name__ == "__main__":
                     conv_type=args.conv_type, 
                     bit_width=args.bit_width, 
                     signed=args.signed, 
-                    epochs=args.epochs
+                    epochs=args.epochs,
+                    zone = args.zone
                 )
         print("\nTraining results for directory:")
         print(best_acc_list)

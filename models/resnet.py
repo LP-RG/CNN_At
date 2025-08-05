@@ -39,12 +39,12 @@ class BasicBlock(nn.Module):
         return out
 
 class ResNet8(nn.Module):
-    def __init__(self, multiplier_matrix, num_classes=10, conv_type = 1, bit_width = 8, signed = False):
+    def __init__(self, multiplier_matrix, num_classes=10, conv_type = 1, bit_width = 8, signed = False, zone = False):
         super(ResNet8, self).__init__()
         #Keeping first layer unapproximated
         first_layer_conv_type = conv_type if (conv_type == 1 or conv_type == 5) else 2
         self.conv1 = cc.Conv2d_custom(3, 16, kernel_size=3, stride=1, padding=1, bias=False,
-                                    conv_type=conv_type, bit_width=bit_width, signed= signed, name = "s", multiplier_matrix=multiplier_matrix)
+                                    conv_type=first_layer_conv_type if zone else conv_type, bit_width=bit_width, signed= signed, name = "s", multiplier_matrix=multiplier_matrix)
         self.bn1 = nn.BatchNorm2d(16)
         self.relu = nn.ReLU(inplace=True)
 
