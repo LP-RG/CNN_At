@@ -1,16 +1,19 @@
 import torch
 import numpy as np
-from tqdm import tqdm
+import mat_mul
 import torch.nn as nn
 import torch.optim as optim
-import models.resnet as resnet
+import models.resnet20 as resnet20
+import models.lenet5 as lenet5
+import models.vgg16 as vgg16
+import models.alexnet_cifar10 as alexnet_cifar10
+import models.resnet56 as resnet56
 import modules.data_loaders as data_loader
-import mat_mul
-import argparse 
+import argparse
 import sys
 import os
+import time
 trained_models_path = "./trained_models/"
-#print(torch.__version__)
 def setup_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -19,27 +22,85 @@ def setup_seed(seed):
 
 setup_seed(42)
 
+device = "cuda"
+MODEL_FACTORIES = {
+    "resnet": resnet20.ResNet20,
+    "lenet5": lenet5.LeNet5,
+    "vgg16": vgg16.VGG16,
+    "alexnet_cifar10": alexnet_cifar10.AlexNetCIFAR10,
+    "resnet56": resnet56.ResNet56_CIFAR100,
+}
+train_loader = None
+test_loader = None
+_classes = None
+
+def set_data_loaders(model_name: str, batch_size: int = 64):
+    global train_loader, test_loader, _classes
+    name = model_name.lower()
+
+    if name in ("lenet5", "resnet"):
+        batch_size = 64
+    elif name == "vgg16":
+        batch_size = 128
+    elif name == "alexnet_cifar10":
+        batch_size = 128
+    elif name == "resnet56":
+        batch_size = 128
+
+    train_loader, test_loader, _classes = data_loader.get_datasets(batch_size, model_name)
+
+def get_exact_training_setup(model_name: str, model: nn.Module):
+    name = model_name.lower()
+
+    if name == "resnet":
+        epochs = 100
+        optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4)
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60], gamma=0.1)
+        return epochs, optimizer, scheduler
+
+    if name == "lenet5":
+        epochs = 20
+        optimizer = optim.SGD(model.parameters(), lr=0.01, momentum=0.9, weight_decay=5e-4)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+        return epochs, optimizer, scheduler
+
+    if name == "vgg16":
+        epochs = 100
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.005, weight_decay=0.005, momentum=0.9)
+        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+        return epochs, optimizer, scheduler
+
+    if name == "alexnet_cifar10":
+        epochs = 200
+        optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
+        return epochs, optimizer, scheduler
+
+    if name == "resnet56":
+        epochs = 200
+        optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=5e-4)
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
+        return epochs, optimizer, scheduler
+
+    epochs = 100
+    optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+    return epochs, optimizer, scheduler
+
 def calibration(model, stats=False):
-    print("CALIBRATING")
+    print("Calibrating model...")
     if stats:
         model.eval()
     else:
         model.train()
-    #for batch, (inputs, _) in enumerate(tqdm(train_loader)):
-    for batch, (inputs, _) in enumerate(train_loader):
+    for inputs, _ in train_loader:
         inputs = inputs.to(device)
         model(inputs)
 
-def train(epoch, model, optimizer, criterion, conv_type=2):
+def train_one_epoch(epoch, model, optimizer, criterion):
+    print(f"Training epoch {epoch + 1}...")
     model.train()
-    """first_conv_layer = model.layer1.conv1
-    # Questi attributi devono essere stati impostati all'interno della classe Conv2d_custom
-    # durante la calibrazione/training, come nel tuo codice originale.
-    print(f"  Activation Scale: {first_conv_layer.activation_scale}")
-    print(f"  Activation ZP Neg: {first_conv_layer.activation_zp_neg}")
-    print(f"  Weight Scale: {first_conv_layer.weight_scale}")
-    print(f"  Weight ZP Neg: {first_conv_layer.weight_zp_neg}")"""
-    total_loss, correct, total = 0, 0, 0
+    total_loss, correct, total = 0.0, 0, 0
     for batch, (inputs, targets) in enumerate(train_loader):
         inputs, targets = inputs.to(device), targets.to(device)
         outputs = model(inputs)
@@ -55,210 +116,142 @@ def train(epoch, model, optimizer, criterion, conv_type=2):
         correct += predicted.eq(targets).sum().item()
     print(f"Epoch {epoch + 1}: Loss: {total_loss/len(train_loader):.4f}, Accuracy: {100.*correct/total:.2f}%")
 
-
 def test(model):
-    print("TESTING")
+    print("Testing model...")
     model.eval()
     correct, total = 0, 0
     with torch.no_grad():
-        #for inputs, targets in tqdm(test_loader):
-        for inputs, targets in (test_loader):
+        for inputs, targets in test_loader:
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = model(inputs)
-            _, predicted = outputs.max(1) 
+            _, predicted = outputs.max(1)
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
-        print(f"Test Accuracy: {100.*correct/total:.2f}%")
-    return (100.*correct/total)
+        acc = 100.0 * correct / total
+        print(f"Test Accuracy: {acc:.2f}%")
+    return acc
 
-train_loader, test_loader, _ = data_loader.get_datasets(64)
-device = 'cuda'
+def build_model(model_name: str, conv_type: int, bit_width: int, signed: bool, zone: bool, multiplier_matrix=None, num_classes: int = 10):
+    if model_name not in MODEL_FACTORIES:
+        raise ValueError(f"Model '{model_name}' non supportato.")
+    return MODEL_FACTORIES[model_name](
+        multiplier_matrix,
+        num_classes=num_classes,
+        conv_type=conv_type,
+        bit_width=bit_width,
+        signed=signed,
+        zone=zone
+    ).to(device)
 
-def new_training_method(multiplier_matrix=None, pretrained=False, retrain=False, conv_type=1, bit_width=8, signed=False, epochs=5, zone = False):
-    print(f"Network training with parameters: multiplier_matrix = {multiplier_matrix} conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}, zone = {zone}")
-    
-    models_dir = trained_models_path.rstrip('/') 
-
+def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int = 1, bit_width: int = 8, signed: bool = False, zone: bool = False, exact_accuracy: float = 0):
+    print(f"Network training with parameters: model_name = {model_name}, conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}, zone = {zone}")
+    models_dir = trained_models_path.rstrip('/')
     if not os.path.exists(models_dir):
-        print(f"The model folder '{models_dir}' does not exist. Creating it now...")
-        try:
-            os.makedirs(models_dir)
-            print(f"Folder '{models_dir}' created successfully.")
-        except OSError as e:
-            print(f"Error creating folder '{models_dir}': {e}")
-            return 
-        
-    best_accuracy = 0
-    if not pretrained:
-        model = resnet.ResNet8(multiplier_matrix, num_classes=10, conv_type=1, bit_width=bit_width, signed=signed).to(device)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4)
-        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[90, 135], gamma=0.1)
-
-        for epoch in range(200):
-            print(f"Epoch {epoch + 1}\n-------------------------------")
-            train(epoch, model, optimizer, criterion)
-            scheduler.step()
-        test(model)
-        torch.save(model.state_dict(), trained_models_path + 'resnet.pth')
-        del model
-
+        os.makedirs(models_dir)
+    exact_path = os.path.join(models_dir, f"{model_name}.pth")
+    quant_path = os.path.join(models_dir, f"{model_name}_q{bit_width}.pth")
+    num_classes = _classes if _classes else 10
+    print(num_classes)
     if conv_type == 1:
-        try:
-            print("Loading pretrained model")
-            model = resnet.ResNet8(multiplier_matrix, num_classes=10, conv_type=1, bit_width=bit_width, signed=signed).to(device)
-            model.load_state_dict(torch.load(trained_models_path + 'resnet.pth', weights_only=True))
-            test(model)
-            return
-        except Exception as e:
-            raise RuntimeError(f"No pretrained model found for conv_type 1: {e}")
-
-    model = resnet.ResNet8(multiplier_matrix, num_classes=10, conv_type=conv_type, bit_width=bit_width, signed=signed, zone=zone).to(device)
-    if conv_type != 1:
-        try:
-            if conv_type == 2:
-                model.load_state_dict(torch.load(trained_models_path + 'resnet.pth', weights_only=True))
-            else:
-                model.load_state_dict(torch.load(trained_models_path + 'resnet_q' + str(bit_width) + '.pth', weights_only=True))
-        except Exception as e: 
-            raise RuntimeError(f"No pretrained model found for conv_type {conv_type}: {e}")
-
-        calibration(model)
-        if conv_type == 5:
-            calibration(model, stats=True)
-            return
-
-        if retrain:
-            best_accuracy = 0
+        if os.path.exists(exact_path):
+            print("Carico modello esatto e avvio test...")
+            model = build_model(model_name, conv_type=1, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+            model.load_state_dict(torch.load(exact_path, weights_only=True))
+            calibration(model)
+            return test(model)
+        else:
+            print("Alleno modello esatto...")
+            model = build_model(model_name, conv_type=1, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+            epochs, optimizer, scheduler = get_exact_training_setup(model_name, model)
             criterion = nn.CrossEntropyLoss()
-            learning_rate = 0.0001 
-            if(bit_width == 4):
-                learning_rate = 0.001
-            optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-            scheduler = optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=10, gamma=0.5)
-            start_accuracy = test(model)
             for epoch in range(epochs):
                 print(f"Epoch {epoch + 1}\n-------------------------------")
-                train(epoch, model, optimizer, criterion, conv_type)
+                train_one_epoch(epoch, model, optimizer, criterion)
+                scheduler.step()
+            torch.save(model.state_dict(), exact_path)
+            return test(model)
+
+    if conv_type == 2:
+        exact_exists = os.path.exists(exact_path)
+        quant_exists = os.path.exists(quant_path)
+        if exact_exists and (not quant_exists):
+            print("Training quantizzato (5 epoche)...")
+            model = build_model(model_name, conv_type=2, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+            model.load_state_dict(torch.load(exact_path, weights_only=True), strict=False)
+            calibration(model)
+            criterion = nn.CrossEntropyLoss()
+            lr = 0.001 if bit_width == 4 else 0.0001
+            optimizer = optim.Adam(model.parameters(), lr=lr)
+            scheduler = optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=10, gamma=0.5)
+            best_acc = 0.0
+            for epoch in range(5):
+                print(f"Epoch {epoch + 1}\n-------------------------------")
+                train_one_epoch(epoch, model, optimizer, criterion)
                 scheduler.step()
                 acc = test(model)
-                if(acc > best_accuracy):
-                    best_accuracy = acc
-            if conv_type == 2:
-                torch.save(model.state_dict(), trained_models_path + 'resnet_q' + str(bit_width) + '.pth')
-        else:
-            start_accuracy = test(model)
-        return start_accuracy if start_accuracy is not None else 0.0, best_accuracy
+                best_acc = max(best_acc, acc)
+            torch.save(model.state_dict(), quant_path)
+            return best_acc
+        if exact_exists and quant_exists:
+            print("Test modello quantizzato...")
+            model = build_model(model_name, conv_type=2, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+            model.load_state_dict(torch.load(quant_path, weights_only=True))
+            calibration(model)
+            return test(model)
+        raise RuntimeError("Allena prima il modello esatto.")
+
+    if conv_type == 3:
+        if not os.path.exists(quant_path):
+            raise RuntimeError("Allena prima il modello quantizzato.")
+        print("Retrain modello approssimato (3 epoche)...")
+        model = build_model(model_name, conv_type=3, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+        model.load_state_dict(torch.load(quant_path, weights_only=True))
+        calibration(model)
+        criterion = nn.CrossEntropyLoss()
+        lr = 0.001 if bit_width == 4 else 0.0001
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+        scheduler = optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=10, gamma=0.5)
+        best_accuracy = 0
+        for epoch in range(3):
+            print(f"Epoch {epoch + 1}\n-------------------------------")
+            train_one_epoch(epoch, model, optimizer, criterion)
+            scheduler.step()
+            acc = test(model)
+            if(acc < exact_accuracy - 2):
+                return 0.0
+            if acc > best_accuracy:
+                best_accuracy = acc
+        return best_accuracy
+
+    raise ValueError(f"conv_type={conv_type} non supportato.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Run training methods with specified parameters."
-    )
-    
-    # Optional positional argument for input_path
-    parser.add_argument(
-        "--input_path",
-        nargs='?', # Makes it optional
-        default=None,
-        help="Path to an .npy file or a directory containing .npy files for training."
-    )
-    
-    # Optional arguments for training parameters
-    parser.add_argument(
-        "--conv_type",
-        type=int,
-        default=1, # Default value as in your initial no-arg case
-        help="Convolution type for the training method (default: 1)."
-    )
-    parser.add_argument(
-        "--bit_width",
-        type=int,
-        default=8, # Default value
-        help="Bit width for the training method (default: 8)."
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=3, # Default value as in your initial no-arg case
-        help="Number of training epochs (default: 3)."
-    )
-    parser.add_argument(
-        "--retrain",
-        action="store_true", # This makes it a boolean flag
-        default = True,
-        help="If set, retrain the model. Otherwise, use existing weights."
-    )
-    parser.add_argument(
-        "--pretrained",
-        action="store_true", # This makes it a boolean flag
-        default = True,
-        help="If set, load a pretrained model. Otherwise, train from scratch."
-    )
-    parser.add_argument(
-        "--signed",
-        action="store_true", # This makes it a boolean flag
-        default = False,
-        help="If set, inputs are treated as signed integers. Default is unsigned."
-    )
-    parser.add_argument(
-        "--zone",
-        action="store_true", # This makes it a boolean flag
-        default = False,
-        help="If set, the first layer will use exact multipliers."
-    )
-
+    parser = argparse.ArgumentParser(description="Run training with simplified logic and model_name routing.")
+    parser.add_argument("--model_name", type=str, default="resnet")
+    parser.add_argument("--conv_type", type=int, default=1)
+    parser.add_argument("--bit_width", type=int, default=8)
+    parser.add_argument("--signed", action="store_true", default=False)
+    parser.add_argument("--zone", action="store_true", default=False)
+    parser.add_argument("--input_path", nargs='?', default=None)
+    parser.add_argument("--exact_accuracy", type=float, default=0)
     args = parser.parse_args()
-
-    # Scenario 1: No input_path provided (default behavior from original script)
-    if args.input_path is None:
-        print("No input path provided. Running default training method.")
-        new_training_method(
-            None, 
-            pretrained=args.pretrained, 
-            retrain=args.retrain, 
-            conv_type=args.conv_type, 
-            bit_width=args.bit_width, 
-            signed=args.signed, 
-            epochs=args.epochs
-        )
+    set_data_loaders(args.model_name)
+    start = time.time()
+    p = args.input_path
+    if p is None:
+        print(new_training_method(args.model_name, None, args.conv_type, args.bit_width, args.signed, args.zone,args.exact_accuracy))
         sys.exit(0)
 
-    # Scenario 2: input_path provided (file or directory)
-    input_path = args.input_path
+    if not os.path.exists(p):
+        print(f"Error: The input path '{p}' does not exist.")
+        sys.exit(1)
 
-    if not os.path.exists(input_path):
-        print(f"Error: The input path '{input_path}' does not exist. Please create it and place .npy files inside.")
-        sys.exit(1) # Use sys.exit(1) for error exit codes
-
-    if os.path.isfile(input_path):
-        print(f"Processing single file: {input_path}")
-        result = new_training_method(
-            input_path, 
-            pretrained=args.pretrained, 
-            retrain=args.retrain, 
-            conv_type=args.conv_type, 
-            bit_width=args.bit_width, 
-            signed=args.signed, 
-            epochs=args.epochs,
-            zone=args.zone
-        )
-        print(result)
-    elif os.path.isdir(input_path):
-        print(f"Processing directory: {input_path}")
-        best_acc_list = {}
-        for filename in os.listdir(input_path):
-            if filename.endswith('.npy'):
-                input_full_path = os.path.join(input_path, filename)
-                print(f"  Training for {filename}...")
-                best_acc_list[filename] = new_training_method(
-                    input_full_path, 
-                    pretrained=args.pretrained, 
-                    retrain=args.retrain, 
-                    conv_type=args.conv_type, 
-                    bit_width=args.bit_width, 
-                    signed=args.signed, 
-                    epochs=args.epochs,
-                    zone = args.zone
-                )
-        print("\nTraining results for directory:")
-        print(best_acc_list)
+    if os.path.isfile(p):
+        print(new_training_method(args.model_name, p, args.conv_type, args.bit_width, args.signed, args.zone,args.exact_accuracy))
+    else:
+        results = {
+            f: new_training_method(args.model_name, os.path.join(p, f), args.conv_type, args.bit_width, args.signed, args.zone,args.exact_accuracy)
+            for f in os.listdir(p) if f.endswith(".npy")
+        }
+        print(results)
+    print(f"Total training time: {time.time() - start}")
