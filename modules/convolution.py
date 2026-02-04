@@ -59,7 +59,7 @@ class Conv2d_custom(nn.Conv2d):
                                         bias=self.bias,
                                         stride=self.stride,
                                         padding=self.padding)
-        """#Handling forward operatation for getting heat maps
+        #Handling forward operatation for getting heat maps
         if(self.training and self.conv_type == 5):
             self.conv2d_op = functions.QuantizedConv2d
         elif(not self.training and (self.conv_type == 5)):
@@ -69,7 +69,7 @@ class Conv2d_custom(nn.Conv2d):
                                         weight=self.weight,
                                         bias=self.bias,
                                         stride=self.stride,
-                                        padding=self.padding)"""
+                                        padding=self.padding)
         #Updating min max of the Observes
         if(self.training):
             self.activation_observer(input)
