@@ -3,6 +3,7 @@ import numpy as np
 import mat_mul
 import torch.nn as nn
 import torch.optim as optim
+import models.resnet8 as resnet8
 import models.resnet20 as resnet20
 import models.lenet5 as lenet5
 import models.vgg16 as vgg16
@@ -13,15 +14,9 @@ import argparse
 import sys
 import os
 import time
+import gc
+
 trained_models_path = "./trained_models/"
-def setup_seed(seed):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-
-setup_seed(42)
-
 device = "cuda"
 MODEL_FACTORIES = {
     "resnet": resnet20.ResNet20,
@@ -29,6 +24,8 @@ MODEL_FACTORIES = {
     "vgg16": vgg16.VGG16,
     "alexnet_cifar10": alexnet_cifar10.AlexNetCIFAR10,
     "resnet56": resnet56.ResNet56_CIFAR100,
+    "resnet8": resnet8.ResNet8
+
 }
 train_loader = None
 test_loader = None
@@ -38,7 +35,7 @@ def set_data_loaders(model_name: str, batch_size: int = 64):
     global train_loader, test_loader, _classes
     name = model_name.lower()
 
-    if name in ("lenet5", "resnet"):
+    if name in ("lenet5", "resnet", "resnet8"):
         batch_size = 64
     elif name == "vgg16":
         batch_size = 128
@@ -46,13 +43,14 @@ def set_data_loaders(model_name: str, batch_size: int = 64):
         batch_size = 128
     elif name == "resnet56":
         batch_size = 128
+    
 
     train_loader, test_loader, _classes = data_loader.get_datasets(batch_size, model_name)
 
 def get_exact_training_setup(model_name: str, model: nn.Module):
     name = model_name.lower()
 
-    if name == "resnet":
+    if name == "resnet" or name == "resnet8":
         epochs = 100
         optimizer = optim.SGD(model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-4)
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[30, 60], gamma=0.1)
@@ -143,15 +141,15 @@ def build_model(model_name: str, conv_type: int, bit_width: int, signed: bool, z
         zone=zone
     ).to(device)
 
-def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int = 1, bit_width: int = 8, signed: bool = False, zone: bool = False, exact_accuracy: float = 0):
-    print(f"Network training with parameters: model_name = {model_name}, conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}, zone = {zone}")
+def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int = 1, bit_width: int = 8, signed: bool = False, zone: bool = False, exact_accuracy: float = 0, no_retraining = False):
+    input_name = multiplier_matrix.split("/")[-1]
+    print(f"Network training with parameters: model_name = {model_name}, conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}, input = {input_name}")
     models_dir = trained_models_path.rstrip('/')
     if not os.path.exists(models_dir):
         os.makedirs(models_dir)
     exact_path = os.path.join(models_dir, f"{model_name}.pth")
     quant_path = os.path.join(models_dir, f"{model_name}_q{bit_width}.pth")
     num_classes = _classes if _classes else 10
-    print(num_classes)
     if conv_type == 1:
         if os.path.exists(exact_path):
             print("Carico modello esatto e avvio test...")
@@ -212,19 +210,48 @@ def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int 
         optimizer = optim.Adam(model.parameters(), lr=lr)
         scheduler = optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=10, gamma=0.5)
         best_accuracy = 0
+        if(no_retraining):
+            acc = test(model)
+            return acc
         for epoch in range(3):
             print(f"Epoch {epoch + 1}\n-------------------------------")
             train_one_epoch(epoch, model, optimizer, criterion)
             scheduler.step()
             acc = test(model)
-            if(acc < exact_accuracy - 2):
-                return 0.0
+            if(acc < exact_accuracy - 3):
+                print("not_good_enough")
+                return acc
             if acc > best_accuracy:
                 best_accuracy = acc
         return best_accuracy
-
+    
+    if(conv_type == 5):
+        model = build_model(model_name, conv_type=5, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+        model.load_state_dict(torch.load(quant_path, weights_only=True))
+        calibration(model)
+        calibration(model,True)
+        print("Calibration for stats Done")
+        return None
     raise ValueError(f"conv_type={conv_type} non supportato.")
 
+
+def setup_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+
+def clean_gpu(model=None, optimizer=None, scheduler=None):
+    """Pulisce GPU e variabili non più usate."""
+    if model is not None:
+        del model
+    if optimizer is not None:
+        del optimizer
+    if scheduler is not None:
+        del scheduler
+    torch.cuda.empty_cache()
+    gc.collect()
+    torch.cuda.synchronize()
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run training with simplified logic and model_name routing.")
     parser.add_argument("--model_name", type=str, default="resnet")
@@ -234,24 +261,72 @@ if __name__ == "__main__":
     parser.add_argument("--zone", action="store_true", default=False)
     parser.add_argument("--input_path", nargs='?', default=None)
     parser.add_argument("--exact_accuracy", type=float, default=0)
+    parser.add_argument("--no_retraining", action="store_true", default=False)
     args = parser.parse_args()
-    set_data_loaders(args.model_name)
+
+    device = "cuda"
+    results = {}
     start = time.time()
     p = args.input_path
     if p is None:
-        print(new_training_method(args.model_name, None, args.conv_type, args.bit_width, args.signed, args.zone,args.exact_accuracy))
+        setup_seed(42)
+        set_data_loaders(args.model_name)  
+        acc = new_training_method(
+            args.model_name,
+            None,
+            args.conv_type,
+            args.bit_width,
+            args.signed,
+            args.zone,
+            args.exact_accuracy
+        )
+        print(acc)
         sys.exit(0)
 
     if not os.path.exists(p):
         print(f"Error: The input path '{p}' does not exist.")
         sys.exit(1)
 
+    # Se p è un singolo file
     if os.path.isfile(p):
-        print(new_training_method(args.model_name, p, args.conv_type, args.bit_width, args.signed, args.zone,args.exact_accuracy))
-    else:
-        results = {
-            f: new_training_method(args.model_name, os.path.join(p, f), args.conv_type, args.bit_width, args.signed, args.zone,args.exact_accuracy)
-            for f in os.listdir(p) if f.endswith(".npy")
-        }
-        print(results)
+        setup_seed(42)
+        set_data_loaders(args.model_name)
+        acc = new_training_method(
+            args.model_name,
+            p,
+            args.conv_type,
+            args.bit_width,
+            args.signed,
+            args.zone,
+            args.exact_accuracy,
+            args.no_retraining
+        )
+        print(acc)
+        clean_gpu()
+        sys.exit(0)
+    # Se p è una cartella
+    for f in os.listdir(p):
+        if not f.endswith(".npy"):
+            continue
+
+        file_path = os.path.join(p, f)
+
+        setup_seed(42)
+
+        set_data_loaders(args.model_name)
+
+        acc = new_training_method(
+            args.model_name,
+            file_path,
+            args.conv_type,
+            args.bit_width,
+            args.signed,
+            args.zone,
+            args.exact_accuracy,
+            args.no_retraining
+        )
+        results[f] = acc
+        clean_gpu()
+
+    print(results)
     print(f"Total training time: {time.time() - start}")
