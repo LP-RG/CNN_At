@@ -9,11 +9,9 @@ import argparse # Importazione aggiunta
 output_plots_path = "./outputs_plot/"
 
 def mult_output_plotting(mult_name, matrix, output_plots_path, minor_tick_step=10):
-    fig, ax = plt.subplots(figsize=(10, 8)) 
+    fig, ax = plt.subplots(figsize=(6, 3)) 
 
-    ax.set_title('Multiplier output', fontsize=16)
-    plt.rcParams.update({'font.size': 20})
-    
+        
     im = ax.imshow(matrix, cmap='Blues', origin='upper')
 
     # Set major ticks
@@ -31,22 +29,20 @@ def mult_output_plotting(mult_name, matrix, output_plots_path, minor_tick_step=1
     ax.grid(True, which='minor', linestyle=':', linewidth=0.5, color='black', alpha=0.7, zorder=0)
 
     ax.set_xlabel("Weights")
-    ax.set_ylabel("Inputs") 
+    ax.set_ylabel("Activations") 
     fig.colorbar(im, ax=ax)
     
     full_save_path = os.path.join(output_plots_path, mult_name + ".png")
-    plt.savefig(full_save_path, bbox_inches='tight')
+    plt.tight_layout() ; plt.savefig(full_save_path, bbox_inches='tight')
     plt.close(fig)
 
 def mult_AE_plotting(mult_name, matrix, output_plots_path, minor_tick_step=10):
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(6, 3))
 
-    ax.set_title('Multiplier Absolute Error', fontsize=16)
     n_inputs = matrix.shape[0]
     exact_outputs = np.outer(np.arange(n_inputs), np.arange(n_inputs))
     differences = np.abs(matrix - exact_outputs)
-    plt.rcParams.update({'font.size': 20})
-    
+        
     im = ax.imshow(differences, cmap='Reds', origin='upper', vmax=(np.max(differences)))
 
     # Set major ticks
@@ -63,22 +59,20 @@ def mult_AE_plotting(mult_name, matrix, output_plots_path, minor_tick_step=10):
     ax.grid(True, which='minor', linestyle=':', linewidth=0.5, color='black', alpha=0.7, zorder=0)
 
     ax.set_xlabel("Weights")
-    ax.set_ylabel("Inputs") 
+    ax.set_ylabel("Activations") 
     fig.colorbar(im, ax=ax) 
     
     full_save_path = os.path.join(output_plots_path, mult_name + "_AE.png")
-    plt.savefig(full_save_path, bbox_inches='tight')
+    plt.tight_layout() ; plt.savefig(full_save_path, bbox_inches='tight')
     plt.close(fig)
 
 def mult_binary_AE_plotting(mult_name, matrix, output_plots_path, minor_tick_step=10):
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(6, 3))
 
-    ax.set_title('Multiplier Absolute Error', fontsize=16)
     n_inputs = matrix.shape[0]
     exact_outputs = np.outer(np.arange(n_inputs), np.arange(n_inputs))
     differences = (np.abs(matrix - exact_outputs) >  3).astype(int)
-    plt.rcParams.update({'font.size': 20})
-    
+        
     im = ax.imshow(differences, cmap='Reds', origin='upper', vmax=(np.max(differences)))
 
     # Set major ticks
@@ -95,18 +89,17 @@ def mult_binary_AE_plotting(mult_name, matrix, output_plots_path, minor_tick_ste
     ax.grid(True, which='minor', linestyle=':', linewidth=0.5, color='black', alpha=0.7, zorder=0)
 
     ax.set_xlabel("Weights")
-    ax.set_ylabel("Inputs") 
+    ax.set_ylabel("Activations") 
     fig.colorbar(im, ax=ax) 
     
     full_save_path = os.path.join(output_plots_path, mult_name + "_AE_binary.png")
-    plt.savefig(full_save_path, bbox_inches='tight')
+    plt.tight_layout()
     plt.close(fig)
 
 
 def mult_RE_plotting(mult_name: str, matrix: np.ndarray, output_plots_path: str, minor_tick_step=10):
-    plt.rcParams.update({'font.size': 20})
-
-    fig, ax = plt.subplots(figsize=(10, 8))
+    
+    fig, ax = plt.subplots(figsize=(6, 3))
 
     n_inputs = matrix.shape[0]
     exact_outputs = np.outer(np.arange(n_inputs), np.arange(n_inputs))
@@ -142,7 +135,6 @@ def mult_RE_plotting(mult_name: str, matrix: np.ndarray, output_plots_path: str,
 
     im = ax.imshow(relative_errors, cmap='Greens', origin='upper', norm=my_norm)
     
-    ax.set_title('Multiplier Relative Error', fontsize=16)
 
     # Set major ticks
     major_step_x = max(1, int(np.round(relative_errors.shape[1] / 5)))
@@ -158,7 +150,7 @@ def mult_RE_plotting(mult_name: str, matrix: np.ndarray, output_plots_path: str,
     ax.grid(True, which='minor', linestyle=':', linewidth=0.5, color='black', alpha=0.7, zorder=0)
     
     ax.set_xlabel("Weights")
-    ax.set_ylabel("Inputs") 
+    ax.set_ylabel("Activations") 
     
     cbar = fig.colorbar(im, ax=ax, label='Relative Error (%) (Log Scale)') 
 
@@ -168,14 +160,14 @@ def mult_RE_plotting(mult_name: str, matrix: np.ndarray, output_plots_path: str,
                 val = relative_errors[i, j]
                 if np.isfinite(val):
                     ax.text(j, i, f'{val:.0f}', 
-                            ha='center', va='center', color='black', fontsize=8)
+                            ha='center', va='center', color='black')
                 else:
                     ax.text(j, i, 'N/A',
-                            ha='center', va='center', color='gray', fontsize=8)
+                            ha='center', va='center', color='gray')
 
     os.makedirs(output_plots_path, exist_ok=True)
     full_save_path = os.path.join(output_plots_path, mult_name + "_RE.png")
-    plt.savefig(full_save_path, bbox_inches='tight')
+    plt.tight_layout() ; plt.savefig(full_save_path, bbox_inches='tight')
     plt.close(fig)
 
 def plots(mult_name,file_path, output_plots_path = output_plots_path, minor_tick_step=10):
@@ -183,9 +175,7 @@ def plots(mult_name,file_path, output_plots_path = output_plots_path, minor_tick
         os.makedirs(output_plots_path)
     outputs = np.load(file_path)
     # Pass the minor_tick_step to each plotting function
-    mult_output_plotting(mult_name=mult_name, matrix=outputs, output_plots_path=output_plots_path, minor_tick_step=minor_tick_step)
     mult_AE_plotting(mult_name=mult_name, matrix=outputs, output_plots_path=output_plots_path, minor_tick_step=minor_tick_step)
-    mult_RE_plotting(mult_name=mult_name, matrix=outputs, output_plots_path=output_plots_path, minor_tick_step=minor_tick_step)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
