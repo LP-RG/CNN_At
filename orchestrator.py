@@ -1,0 +1,244 @@
+import subprocess
+import os
+import time
+import sys
+import argparse
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+
+# 1. Genera i file con /subxpat/main.py (ci sono. flag per runnare l'exe), questo genera una serie di file in ./subxpat/output/ver
+# 2. Non aspetta la fine di /subxpat/main.py ma per ogni file generato (all interno di ./subxpat/output/ver) 
+#    lancia un processo che esegue ./circuits_analizer.py sul file generato (genera file .npy non specificato dove).
+# 3. successivamente lancia ./res_net_training.py (max 4 processi in parallelo)
+# 4. end script
+
+
+CURR_DIR = os.path.dirname(os.path.abspath(__file__))
+SUBDIR = os.path.dirname(CURR_DIR)
+SUBXPAT_DIR = os.path.join(SUBDIR, "subxpat")
+SUBXPAT_OUTPUT_DIR = os.path.join(SUBXPAT_DIR, "output", "ver")
+SCRIPT_XPAT = os.path.join(SUBXPAT_DIR, "main.py")
+
+#SCRIPT_ANALIZER = os.path.join(CURR_DIR, "circuits_analizer.py")
+SCRIPT_ANALIZER = os.path.join(CURR_DIR, "fake_circuits_analizer.py") #temp testing
+
+ANALIZER_OUTPUT_DIR = os.path.join(CURR_DIR, "npy_outputs")
+
+SCRIPT_TRAINING = os.path.join(CURR_DIR, "res_net_training.py")
+
+def is_file_ready(file_path):
+    try:
+        subprocess.check_output(["lsof", "-w", file_path])
+        return False
+    except subprocess.CalledProcessError:
+        return True
+    except FileNotFoundError:
+        return False
+
+
+def run_analizer(file_path, bitwidth, output_dir):
+    filename = os.path.basename(file_path)
+    output_npy_name = os.path.splitext(filename)[0] + ".npy"
+    output_npy_path = os.path.join(output_dir, output_npy_name)
+    
+    cmd = [
+        sys.executable, SCRIPT_ANALIZER,
+        file_path,          
+        str(bitwidth),      
+        output_npy_path     
+    ]
+    
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL) 
+        print(f"[ANALIZER] Done: {filename}")
+        return output_npy_path 
+    except subprocess.CalledProcessError as e:
+        print(f"[ANALIZER] Error on {filename}: {e}")
+        raise
+
+def run_training(input_npy_path, conv_type, model_name, exact_acc_val):
+    filename = os.path.basename(input_npy_path)
+    
+    cmd = [
+        sys.executable, SCRIPT_TRAINING,
+        "--conv_type", str(conv_type),
+        "--model_name", str(model_name),
+        "--input_path", input_npy_path
+    ]
+
+    if exact_acc_val is not None:
+         cmd.extend(["--exact_accuracy", str(exact_acc_val)])
+    
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+        print(f"[TRAINING] Done: {filename}")
+        return input_npy_path
+    except subprocess.CalledProcessError as e:
+        print(f"[TRAINING] Error on {filename}: {e}")
+        raise
+
+def orchestrator(args):
+    
+    start_timestamp = time.time()
+    print(f"--- ORCHESTRATOR STARTED ---")
+    print(f"Max Error: {args.max_error} | Bitwidth: {args.bitwidth} | Model: {args.model_name}")
+
+    if not os.path.exists(ANALIZER_OUTPUT_DIR):
+        os.makedirs(ANALIZER_OUTPUT_DIR)
+
+    #setup venv if non existant
+    venv_python = os.path.join(SUBXPAT_DIR, ".venv", "bin", "python")
+
+    if not os.path.exists(venv_python):
+        print(f"Virtual environment not found at {venv_python}")
+        print("Attempting to run 'make setup' in subxpat directory...")
+        try:
+            subprocess.run(["make", "setup"], cwd=SUBXPAT_DIR, check=True)
+            subprocess.run([venv_python, "-m", "pip", "install", "jinja2"], cwd=SUBXPAT_DIR, check=True)
+            print("Setup completed successfully.")
+        except subprocess.CalledProcessError:
+            print("'make setup' failed. Please fix the subxpat repo manually.")
+            return
+        except FileNotFoundError:
+            print("'make' command not found. Cannot run setup.")
+            return
+        
+        if not os.path.exists(venv_python):
+            print("Error: 'make setup' finished but python executable is still missing.")
+            return
+
+    # --- 1. START GENERATOR (SUBXPAT) ---
+    if os.path.exists(SCRIPT_XPAT):
+        """subxpat_args = [
+            venv_python, SCRIPT_XPAT,
+            "mul_i16_o16", 
+            "--subxpat", 
+            "--template", "nonshared", 
+            "--extraction-mode", str(args.extraction_mode), 
+            "--min-labeling", 
+            "--encoding", "z3bvec", 
+            "--max-error", str(args.max_error), 
+            "--imax", "4", 
+            "--omax", "2", 
+            "--max-lpp", "4", 
+            "--max-ppo", "4", 
+            "--baseet", "45", 
+            "--stepsize", "10", 
+            "--stepfactor", "2", 
+            "--metric", "wre", 
+            "--timeout", str(args.timeout)
+        ]"""
+
+        subxpat_args = [
+            venv_python, SCRIPT_XPAT,
+            "adder_i8_o5", "--max-lpp=8", "--max-ppo=32", "--max-error=16"
+        ]
+
+        print(f"Launching Generator in background...")
+        my_env = os.environ.copy()
+        
+        my_env["PYTHONPATH"] = SUBXPAT_DIR + os.pathsep + my_env.get("PYTHONPATH", "")
+
+        venv_bin = os.path.dirname(venv_python)
+        my_env["PATH"] = venv_bin + os.pathsep + my_env.get("PATH", "")
+
+        proc_gen = subprocess.Popen(subxpat_args, cwd=SUBXPAT_DIR, env=my_env)
+    else:
+        print(f"ERROR: {SCRIPT_XPAT} not found.")
+        return
+
+    processed_files = set()
+    training_futures = []
+
+    gen_is_running = True
+
+    #for each new file created by subxpat launch analizer + training
+    with ProcessPoolExecutor() as analizer_executor, ThreadPoolExecutor(max_workers=4) as training_executor:
+
+        pending_locked_files = False
+
+        while gen_is_running or len(training_futures) > 0 or pending_locked_files:
+
+            #print(f"Checking for new files... (Gen Running: {gen_is_running} | Pending Locked Files: {pending_locked_files} | Training Queue: {len(training_futures)})")
+
+            pending_locked_files = False
+
+            training_futures = [f for f in training_futures if not f.done()]
+
+            #print(proc_gen.poll())
+
+            gen_is_running = proc_gen.poll() is None
+            files_to_process = []
+            
+            if os.path.exists(SUBXPAT_OUTPUT_DIR):
+                try:
+                    for f in os.listdir(SUBXPAT_OUTPUT_DIR):
+                        full_path = os.path.join(SUBXPAT_OUTPUT_DIR, f)
+                        if os.path.isfile(full_path) and full_path not in processed_files:
+                            try:
+                                # Check if file created by current run)
+                                if os.path.getmtime(full_path) > start_timestamp:
+                                    files_to_process.append(full_path)
+                            except FileNotFoundError:
+                                continue
+                except FileNotFoundError:
+                    pass
+
+            for file_path in files_to_process:
+
+                if not is_file_ready(file_path):
+                    pending_locked_files = True
+                    continue
+
+                processed_files.add(file_path)
+                
+                # 1. Submit ANALYZER
+                future_ana = analizer_executor.submit(
+                    run_analizer, 
+                    file_path, 
+                    args.bitwidth, 
+                    ANALIZER_OUTPUT_DIR
+                )
+                
+                # 2. Callback TRAINING
+                def schedule_training(f_ana):
+                    try:
+                        npy_path = f_ana.result()
+                        t_fut = training_executor.submit(
+                            run_training, 
+                            npy_path, 
+                            args.conv_type, 
+                            args.model_name,
+                            args.exact_accuracy 
+                        )
+                        training_futures.append(t_fut)
+                    except Exception as e:
+                        print(f"Skip Training: Analysis Error -> {e}")
+
+                future_ana.add_done_callback(schedule_training)
+
+            #if not gen_is_running and len(files_to_process) == 0:
+                #break
+            
+            time.sleep(1)
+
+    print("--- COMPLETED ---")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Orchestrator for Subxpat -> Analyzer -> Training")
+    
+    # Subxpat arguments
+    parser.add_argument("--max-error", type=str, default="100", help="Value for --max-error in generator (Default: 100)")
+    parser.add_argument("--extraction-mode", type=str, default="55", help="Value for --extraction-mode in generator (Default: 55)")
+    parser.add_argument("--timeout", type=str, default="10800", help="Value for --timeout in generator (Default: 10800 seconds)")
+    
+    # Analyzer arguments
+    parser.add_argument("--bitwidth", type=str, default="16", help="Bitwidth for circuits_analizer (Default: 16)")
+    
+    # Training arguments
+    parser.add_argument("--conv-type", type=str, default="3", help="Conv type for training (Default: 3)")
+    parser.add_argument("--model-name", type=str, default="resnet", help="Model name for training (Default: resnet)")
+    parser.add_argument("--exact-accuracy", type=int, default=None, help="Integer value for --exact-accuracy in training")
+
+    args = parser.parse_args()
+    
+    orchestrator(args)

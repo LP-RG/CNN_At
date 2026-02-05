@@ -15,6 +15,10 @@ import sys
 import os
 import time
 import gc
+ 
+
+print(torch.__version__)
+
 
 trained_models_path = "./trained_models/"
 device = "cuda"
