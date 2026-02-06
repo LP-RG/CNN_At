@@ -19,7 +19,7 @@ SUBXPAT_OUTPUT_DIR = os.path.join(SUBXPAT_DIR, "output", "ver")
 SCRIPT_XPAT = os.path.join(SUBXPAT_DIR, "main.py")
 
 #SCRIPT_ANALIZER = os.path.join(CURR_DIR, "circuits_analizer.py")
-SCRIPT_ANALIZER = os.path.join(CURR_DIR, "fake_circuits_analizer.py") #temp testing
+SCRIPT_ANALIZER = os.path.join(CURR_DIR, "npy_generator.py") #temp testing
 
 ANALIZER_OUTPUT_DIR = os.path.join(CURR_DIR, "npy_outputs")
 
@@ -35,7 +35,7 @@ def is_file_ready(file_path):
         return False
 
 
-def run_analizer(file_path, bitwidth, output_dir):
+def run_analizer(file_path, bitwidth, output_dir, stepsize, stepfactor):
     filename = os.path.basename(file_path)
     output_npy_name = os.path.splitext(filename)[0] + ".npy"
     output_npy_path = os.path.join(output_dir, output_npy_name)
@@ -44,7 +44,9 @@ def run_analizer(file_path, bitwidth, output_dir):
         sys.executable, SCRIPT_ANALIZER,
         file_path,          
         str(bitwidth),      
-        output_npy_path     
+        output_npy_path,
+        "--stepsize", str(stepsize),
+        "--stepfactor", str(stepfactor)
     ]
     
     try:
@@ -80,20 +82,21 @@ def orchestrator(args):
     
     start_timestamp = time.time()
     print(f"--- ORCHESTRATOR STARTED ---")
-    print(f"Max Error: {args.max_error} | Bitwidth: {args.bitwidth} | Model: {args.model_name}")
+    
 
     if not os.path.exists(ANALIZER_OUTPUT_DIR):
         os.makedirs(ANALIZER_OUTPUT_DIR)
 
     #setup venv if non existant
     venv_python = os.path.join(SUBXPAT_DIR, ".venv", "bin", "python")
+    subprocess.run([venv_python, "-m", "pip", "install", "jinja2"], cwd=SUBXPAT_DIR, check=True)
+
 
     if not os.path.exists(venv_python):
         print(f"Virtual environment not found at {venv_python}")
         print("Attempting to run 'make setup' in subxpat directory...")
         try:
             subprocess.run(["make", "setup"], cwd=SUBXPAT_DIR, check=True)
-            subprocess.run([venv_python, "-m", "pip", "install", "jinja2"], cwd=SUBXPAT_DIR, check=True)
             print("Setup completed successfully.")
         except subprocess.CalledProcessError:
             print("'make setup' failed. Please fix the subxpat repo manually.")
@@ -106,11 +109,11 @@ def orchestrator(args):
             print("Error: 'make setup' finished but python executable is still missing.")
             return
 
-    # --- 1. START GENERATOR (SUBXPAT) ---
+    # --- 1a. START SUBXPAT ---
     if os.path.exists(SCRIPT_XPAT):
-        """subxpat_args = [
+        subxpat_args = [
             venv_python, SCRIPT_XPAT,
-            "mul_i16_o16", 
+            args.exact_benchmark, 
             "--subxpat", 
             "--template", "nonshared", 
             "--extraction-mode", str(args.extraction_mode), 
@@ -122,18 +125,28 @@ def orchestrator(args):
             "--max-lpp", "4", 
             "--max-ppo", "4", 
             "--baseet", "45", 
-            "--stepsize", "10", 
-            "--stepfactor", "2", 
+            "--stepsize", str(args.stepsize), 
+            "--stepfactor", str(args.stepfactor), 
             "--metric", "wre", 
             "--timeout", str(args.timeout)
-        ]"""
+        ]
 
+        """
         subxpat_args = [
             venv_python, SCRIPT_XPAT,
             "adder_i8_o5", "--max-lpp=8", "--max-ppo=32", "--max-error=16"
         ]
+        """
 
-        print(f"Launching Generator in background...")
+        # extract bitwidth from benchmark name
+        try:
+            bitwidth = int(int(args.exact_benchmark.split("_i")[1].split("_")[0]) / 2)
+            print(f"Extracted bitwidth: {bitwidth}")
+        except IndexError:
+            print("Errore: Il nome del benchmark non segue il formato standard (es. mul_i8_o5)")
+            sys.exit(1)
+
+        print(f"Launching SUBXPAT in background...")
         my_env = os.environ.copy()
         
         my_env["PYTHONPATH"] = SUBXPAT_DIR + os.pathsep + my_env.get("PYTHONPATH", "")
@@ -151,7 +164,7 @@ def orchestrator(args):
 
     gen_is_running = True
 
-    #for each new file created by subxpat launch analizer + training
+    # 1b. for each new file created by subxpat launch analizer + training
     with ProcessPoolExecutor() as analizer_executor, ThreadPoolExecutor(max_workers=4) as training_executor:
 
         pending_locked_files = False
@@ -164,8 +177,6 @@ def orchestrator(args):
 
             training_futures = [f for f in training_futures if not f.done()]
 
-            #print(proc_gen.poll())
-
             gen_is_running = proc_gen.poll() is None
             files_to_process = []
             
@@ -175,7 +186,7 @@ def orchestrator(args):
                         full_path = os.path.join(SUBXPAT_OUTPUT_DIR, f)
                         if os.path.isfile(full_path) and full_path not in processed_files:
                             try:
-                                # Check if file created by current run)
+                                # Check if file is created by current run
                                 if os.path.getmtime(full_path) > start_timestamp:
                                     files_to_process.append(full_path)
                             except FileNotFoundError:
@@ -191,15 +202,17 @@ def orchestrator(args):
 
                 processed_files.add(file_path)
                 
-                # 1. Submit ANALYZER
+                # 2. Submit ANALYZER (run circuits_analizer.py)
                 future_ana = analizer_executor.submit(
                     run_analizer, 
                     file_path, 
-                    args.bitwidth, 
-                    ANALIZER_OUTPUT_DIR
+                    bitwidth, 
+                    ANALIZER_OUTPUT_DIR,
+                    str(args.stepsize),
+                    str(args.stepfactor)
                 )
                 
-                # 2. Callback TRAINING
+                # 3. Callback TRAINING (run res_net_training.py) when ANALYZER is done
                 def schedule_training(f_ana):
                     try:
                         npy_path = f_ana.result()
@@ -216,9 +229,6 @@ def orchestrator(args):
 
                 future_ana.add_done_callback(schedule_training)
 
-            #if not gen_is_running and len(files_to_process) == 0:
-                #break
-            
             time.sleep(1)
 
     print("--- COMPLETED ---")
@@ -227,12 +237,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Orchestrator for Subxpat -> Analyzer -> Training")
     
     # Subxpat arguments
-    parser.add_argument("--max-error", type=str, default="100", help="Value for --max-error in generator (Default: 100)")
-    parser.add_argument("--extraction-mode", type=str, default="55", help="Value for --extraction-mode in generator (Default: 55)")
-    parser.add_argument("--timeout", type=str, default="10800", help="Value for --timeout in generator (Default: 10800 seconds)")
+    parser.add_argument(metavar='exact-benchmark', dest='exact_benchmark', type=str, help='Circuit to approximate (Verilog file in `input/ver/`)')
+    parser.add_argument("--extraction-mode", type=str, default="55", help="Value for --extraction-mode in subxpat (Default: 55)")
+    parser.add_argument("--max-error", type=str, default="100", help="Value for --max-error in subxpat (Default: 100)")
+    parser.add_argument('--stepsize', type=int, required=False, default=10, help='Value for --stepsize in subxpat (Default: 10)')
+    parser.add_argument('--stepfactor', type=int, required=False, default=2, help='Value for --stepfactor in subxpat (Default: 2)')
+    parser.add_argument("--timeout", type=str, default="10800", help="Value for --timeout in subxpat (Default: 10800 seconds)")
     
-    # Analyzer arguments
-    parser.add_argument("--bitwidth", type=str, default="16", help="Bitwidth for circuits_analizer (Default: 16)")
     
     # Training arguments
     parser.add_argument("--conv-type", type=str, default="3", help="Conv type for training (Default: 3)")

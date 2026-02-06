@@ -146,7 +146,7 @@ def build_model(model_name: str, conv_type: int, bit_width: int, signed: bool, z
     ).to(device)
 
 def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int = 1, bit_width: int = 8, signed: bool = False, zone: bool = False, exact_accuracy: float = 0, no_retraining = False):
-    input_name = multiplier_matrix.split("/")[-1]
+    input_name = multiplier_matrix.split("/")[-1] if multiplier_matrix is not None else "None"
     print(f"Network training with parameters: model_name = {model_name}, conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}, input = {input_name}")
     models_dir = trained_models_path.rstrip('/')
     if not os.path.exists(models_dir):
