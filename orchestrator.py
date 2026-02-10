@@ -5,12 +5,16 @@ import sys
 import argparse
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
-# 1. Genera i file con /subxpat/main.py (ci sono. flag per runnare l'exe), questo genera una serie di file in ./subxpat/output/ver
-# 2. Non aspetta la fine di /subxpat/main.py ma per ogni file generato (all interno di ./subxpat/output/ver) 
-#    lancia un processo che esegue ./circuits_analizer.py sul file generato (genera file .npy non specificato dove).
-# 3. successivamente lancia ./res_net_training.py (max 4 processi in parallelo)
-# 4. end script
+# PREREQUISITES:
+# 1. subxpat repo in the same parent directory of this repo
+# 2. Python 3.8+ installed
+# 3. updated Z3Log folder in subxpat/.venv/lib/python3.8/site-packages
 
+# 1a. Generate verilog files using /subxpat/main.py
+# 1b. For each generated verilog
+    # 2. Pass generated verilog to analyzer (npy_generator.py) -> save result on results.csv + generate .npy
+    # 3. callback training when analyzer is done (res_net_training.py)
+# 3. end execution
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 SUBDIR = os.path.dirname(CURR_DIR)
@@ -18,8 +22,7 @@ SUBXPAT_DIR = os.path.join(SUBDIR, "subxpat")
 SUBXPAT_OUTPUT_DIR = os.path.join(SUBXPAT_DIR, "output", "ver")
 SCRIPT_XPAT = os.path.join(SUBXPAT_DIR, "main.py")
 
-#SCRIPT_ANALIZER = os.path.join(CURR_DIR, "circuits_analizer.py")
-SCRIPT_ANALIZER = os.path.join(CURR_DIR, "npy_generator.py") #temp testing
+SCRIPT_ANALIZER = os.path.join(CURR_DIR, "npy_generator.py")
 
 ANALIZER_OUTPUT_DIR = os.path.join(CURR_DIR, "npy_outputs")
 
@@ -37,7 +40,7 @@ def is_file_ready(file_path):
 
 def run_analizer(file_path, bitwidth, output_dir, stepsize, stepfactor):
     filename = os.path.basename(file_path)
-    output_npy_name = os.path.splitext(filename)[0] + ".npy"
+    output_npy_name = os.path.splitext(filename)[0] + f"_ss{stepsize}_sf{stepfactor}.npy"
     output_npy_path = os.path.join(output_dir, output_npy_name)
     
     cmd = [
@@ -50,28 +53,34 @@ def run_analizer(file_path, bitwidth, output_dir, stepsize, stepfactor):
     ]
     
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL) 
+        with open("log/analizer_out.log", "a") as log_file:
+            subprocess.run(cmd, check=True, stdout=log_file, stderr=subprocess.STDOUT)
         print(f"[ANALIZER] Done: {filename}")
         return output_npy_path 
     except subprocess.CalledProcessError as e:
         print(f"[ANALIZER] Error on {filename}: {e}")
         raise
 
-def run_training(input_npy_path, conv_type, model_name, exact_acc_val):
+def run_training(input_npy_path, conv_type, model_name, exact_acc_val, bitwidth):
     filename = os.path.basename(input_npy_path)
+
+    print(f"[TRAINING] Starting: {filename} | Conv Type: {conv_type} | Model: {model_name} | Exact Acc: {exact_acc_val} | Bitwidth: {bitwidth}")
     
     cmd = [
         sys.executable, SCRIPT_TRAINING,
         "--conv_type", str(conv_type),
         "--model_name", str(model_name),
-        "--input_path", input_npy_path
+        "--input_path", input_npy_path,
+        "--bit_width", str(bitwidth)
     ]
 
     if exact_acc_val is not None:
          cmd.extend(["--exact_accuracy", str(exact_acc_val)])
     
+    
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL)
+        with open("log/training_out.log", "a") as log_file:
+            subprocess.run(cmd, check=True, stdout=log_file, stderr=subprocess.STDOUT)
         print(f"[TRAINING] Done: {filename}")
         return input_npy_path
     except subprocess.CalledProcessError as e:
@@ -221,7 +230,8 @@ def orchestrator(args):
                             npy_path, 
                             args.conv_type, 
                             args.model_name,
-                            args.exact_accuracy 
+                            args.exact_accuracy,
+                            bitwidth 
                         )
                         training_futures.append(t_fut)
                     except Exception as e:
