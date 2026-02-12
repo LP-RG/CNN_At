@@ -169,3 +169,5 @@ temp/
 trained_models/
 report/
 data/
+# Ignore VS Code settings
+.vscode/

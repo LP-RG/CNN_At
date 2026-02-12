@@ -5,6 +5,8 @@ import sys
 import argparse
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 
+
+
 # PREREQUISITES:
 # 1. subxpat repo in the same parent directory of this repo
 # 2. Python 3.8+ installed
@@ -19,6 +21,15 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 SUBDIR = os.path.dirname(CURR_DIR)
 SUBXPAT_DIR = os.path.join(SUBDIR, "subxpat")
+
+if SUBXPAT_DIR not in sys.path:
+    sys.path.insert(0, SUBXPAT_DIR)
+try:
+    from sxpat.specifications import *
+except ImportError as e:
+    print(f"Error importing sxpat specifications: {e}")
+    raise
+
 SUBXPAT_OUTPUT_DIR = os.path.join(SUBXPAT_DIR, "output", "ver")
 SCRIPT_XPAT = os.path.join(SUBXPAT_DIR, "main.py")
 
@@ -38,9 +49,9 @@ def is_file_ready(file_path):
         return False
 
 
-def run_analizer(file_path, bitwidth, output_dir, stepsize, stepfactor):
+def run_analizer(file_path, bitwidth, output_dir, beta, alpha):
     filename = os.path.basename(file_path)
-    output_npy_name = os.path.splitext(filename)[0] + f"_ss{stepsize}_sf{stepfactor}.npy"
+    output_npy_name = os.path.splitext(filename)[0] + f"_beta{beta}_alpha{alpha}.npy"
     output_npy_path = os.path.join(output_dir, output_npy_name)
     
     cmd = [
@@ -48,12 +59,13 @@ def run_analizer(file_path, bitwidth, output_dir, stepsize, stepfactor):
         file_path,          
         str(bitwidth),      
         output_npy_path,
-        "--stepsize", str(stepsize),
-        "--stepfactor", str(stepfactor)
+        "--beta", str(beta),
+        "--alpha", str(alpha)
     ]
     
     try:
         with open("log/analizer_out.log", "a") as log_file:
+            log_file.write(f"\n--- ANALYZER STARTED: {filename} | beta: {beta}, alpha: {alpha} | date: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
             subprocess.run(cmd, check=True, stdout=log_file, stderr=subprocess.STDOUT)
         print(f"[ANALIZER] Done: {filename}")
         return output_npy_path 
@@ -80,6 +92,7 @@ def run_training(input_npy_path, conv_type, model_name, exact_acc_val, bitwidth)
     
     try:
         with open("log/training_out.log", "a") as log_file:
+            log_file.write(f"\n--- TRAINING STARTED: {filename} | Conv Type: {conv_type} | Model: {model_name} | Exact Acc: {exact_acc_val} | Bitwidth: {bitwidth} | date: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
             subprocess.run(cmd, check=True, stdout=log_file, stderr=subprocess.STDOUT)
         print(f"[TRAINING] Done: {filename}")
         return input_npy_path
@@ -119,26 +132,43 @@ def orchestrator(args):
             return
 
     # --- 1a. START SUBXPAT ---
-    if os.path.exists(SCRIPT_XPAT):
+    if os.path.exists(SCRIPT_XPAT):        
+        
+        def enum_to_str(val):
+            if hasattr(val, 'value'):
+                return str(val.value)
+            return str(val)
+
+        def add_arg_if_not_none(args_list, arg_name, arg_value):
+            if arg_value is not None:
+                args_list.extend([f"--{arg_name}", enum_to_str(arg_value)])
+        
         subxpat_args = [
             venv_python, SCRIPT_XPAT,
             args.exact_benchmark, 
-            "--subxpat", 
-            "--template", "nonshared", 
-            "--extraction-mode", str(args.extraction_mode), 
-            "--min-labeling", 
-            "--encoding", "z3bvec", 
-            "--max-error", str(args.max_error), 
-            "--imax", "4", 
-            "--omax", "2", 
-            "--max-lpp", "4", 
-            "--max-ppo", "4", 
-            "--baseet", "45", 
-            "--stepsize", str(args.stepsize), 
-            "--stepfactor", str(args.stepfactor), 
-            "--metric", "wre", 
-            "--timeout", str(args.timeout)
         ]
+        
+        if args.min_labeling:
+            subxpat_args.append("--min-labeling")
+        
+        if args.subxpat:
+            subxpat_args.append("--subxpat")
+
+        add_arg_if_not_none(subxpat_args, "template", args.template)
+        add_arg_if_not_none(subxpat_args, "extraction-mode", args.extraction_mode)
+        add_arg_if_not_none(subxpat_args, "encoding", args.encoding)
+        add_arg_if_not_none(subxpat_args, "max-error", args.max_error)
+        add_arg_if_not_none(subxpat_args, "imax", args.imax)
+        add_arg_if_not_none(subxpat_args, "omax", args.omax)
+        add_arg_if_not_none(subxpat_args, "max-lpp", args.max_lpp)
+        add_arg_if_not_none(subxpat_args, "max-ppo", args.max_ppo)
+        add_arg_if_not_none(subxpat_args, "baseet", args.baseet)
+        add_arg_if_not_none(subxpat_args, "beta", args.beta)
+        add_arg_if_not_none(subxpat_args, "alpha", args.alpha)
+        add_arg_if_not_none(subxpat_args, "c-constant", args.c_constant)
+        add_arg_if_not_none(subxpat_args, "cnn-constraint", args.cnn_constraint)
+        add_arg_if_not_none(subxpat_args, "metric", args.metric)
+        add_arg_if_not_none(subxpat_args, "timeout", args.timeout)
 
         """
         subxpat_args = [
@@ -149,7 +179,7 @@ def orchestrator(args):
 
         # extract bitwidth from benchmark name
         try:
-            bitwidth = int(int(args.exact_benchmark.split("_i")[1].split("_")[0]) / 2)
+            bitwidth = int(int(args.exact_benchmark.split("_i")[1].split("_")[0]) // 2)
             print(f"Extracted bitwidth: {bitwidth}")
         except IndexError:
             print("Errore: Il nome del benchmark non segue il formato standard (es. mul_i8_o5)")
@@ -211,14 +241,14 @@ def orchestrator(args):
 
                 processed_files.add(file_path)
                 
-                # 2. Submit ANALYZER (run circuits_analizer.py)
+                # 2. Submit ANALYZER (run npy_generator.py)
                 future_ana = analizer_executor.submit(
                     run_analizer, 
                     file_path, 
                     bitwidth, 
                     ANALIZER_OUTPUT_DIR,
-                    str(args.stepsize),
-                    str(args.stepfactor)
+                    str(args.beta),
+                    str(args.alpha)
                 )
                 
                 # 3. Callback TRAINING (run res_net_training.py) when ANALYZER is done
@@ -244,15 +274,7 @@ def orchestrator(args):
     print("--- COMPLETED ---")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Orchestrator for Subxpat -> Analyzer -> Training")
-    
-    # Subxpat arguments
-    parser.add_argument(metavar='exact-benchmark', dest='exact_benchmark', type=str, help='Circuit to approximate (Verilog file in `input/ver/`)')
-    parser.add_argument("--extraction-mode", type=str, default="55", help="Value for --extraction-mode in subxpat (Default: 55)")
-    parser.add_argument("--max-error", type=str, default="100", help="Value for --max-error in subxpat (Default: 100)")
-    parser.add_argument('--stepsize', type=int, required=False, default=10, help='Value for --stepsize in subxpat (Default: 10)')
-    parser.add_argument('--stepfactor', type=int, required=False, default=2, help='Value for --stepfactor in subxpat (Default: 2)')
-    parser.add_argument("--timeout", type=str, default="10800", help="Value for --timeout in subxpat (Default: 10800 seconds)")
+    parser = argparse.ArgumentParser(description="Orchestrator for Subxpat (see Subxpat help for infos) -> Analyzer -> Training")
     
     
     # Training arguments
@@ -260,6 +282,14 @@ if __name__ == "__main__":
     parser.add_argument("--model-name", type=str, default="resnet", help="Model name for training (Default: resnet)")
     parser.add_argument("--exact-accuracy", type=int, default=None, help="Integer value for --exact-accuracy in training")
 
-    args = parser.parse_args()
+    args, subxpat_argv = parser.parse_known_args()
+
+    original_argv = sys.argv[:]
+    sys.argv = [sys.argv[0]] + subxpat_argv
+    
+    specs = Specifications.parse_args()
+    
+    sys.argv = original_argv
+    vars(args).update(vars(specs))
     
     orchestrator(args)

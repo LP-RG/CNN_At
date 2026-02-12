@@ -5,7 +5,7 @@ import time
 from vpadanalyzer.synthesis import Synthesis
 
 
-# file(baseId_stepsize_stepfactor),area,power,delay,pda,mean_ae,mean_ae_cnn,accuracy
+# file(baseId_beta_alpha),area,power,delay,pda,mean_ae,mean_ae_cnn,accuracy
 
 
 CSV_HEADER = "file,area,power,delay,pda,mean_ae,mean_ae_cnn,max_ae\n"
@@ -31,7 +31,7 @@ def circuits_analizer(input_path):
     print("Synth completed")
     return {"file": os.path.basename(input_path), "area": area, "power": power, "delay": delay}
 
-def generate_npy_for_single_file(input_verilog, bitwidth, output_npy_path, stepsize=None, stepfactor=None):
+def generate_npy_for_single_file(input_verilog, bitwidth, output_npy_path, beta=None, alpha=None):
     """
     1. Converte il Verilog in funzione Python.
     2. Simula e crea il .npy.
@@ -40,14 +40,14 @@ def generate_npy_for_single_file(input_verilog, bitwidth, output_npy_path, steps
     
     filename = os.path.basename(input_verilog)
 
-    #append stepsize and stepfactor to file name
-    if stepsize is not None and stepfactor is not None:
+    #append beta and alpha to file name
+    if beta is not None and alpha is not None:
         name, ext = os.path.splitext(filename)
-        filename = f"{name}_ss{stepsize}_sf{stepfactor}{ext}"
-        output_npy_path = os.path.join(os.path.dirname(output_npy_path), f"{name}_ss{stepsize}_sf{stepfactor}.npy")
+        filename = f"{name}_beta{beta}_alpha{alpha}"
+        output_npy_path = os.path.join(os.path.dirname(output_npy_path), f"{name}_beta{beta}_alpha{alpha}.npy")
     
-    print(f"[NPY GEN] Processing: {filename} -> {output_npy_path}")
-    print(f"[NPY GEN] Stepsize: {stepsize}, Stepfactor: {stepfactor}, Bitwidth: {bitwidth}")
+    print(f"[NPY GEN] Processing: {name}{ext} -> {output_npy_path}")
+    print(f"[NPY GEN] beta: {beta}, alpha: {alpha}, Bitwidth: {bitwidth}")
 
     sub_xpat_circuits_generator.generate_approx_mult_function(input_verilog, bitwidth)
 
@@ -82,8 +82,8 @@ if __name__ == "__main__":
     parser.add_argument("bitwidth", type=int, help="Bitwidth (e.g., 8 or 16)")
     parser.add_argument("output_npy", type=str, help="Path to output .npy file")
 
-    parser.add_argument("--stepsize", type=int, help="Stepsize for SubXpat (default: 10)")
-    parser.add_argument("--stepfactor", type=int, help="Stepfactor for SubXpat (default: 2)")
+    parser.add_argument("--beta", type=int, help="beta for SubXpat (default: 10)")
+    parser.add_argument("--alpha", type=int, help="alpha for SubXpat (default: 2)")
 
     args = parser.parse_args()
 
@@ -93,4 +93,4 @@ if __name__ == "__main__":
 
     os.makedirs(os.path.dirname(args.output_npy), exist_ok=True)
 
-    generate_npy_for_single_file(args.input_verilog, args.bitwidth, args.output_npy, args.stepsize, args.stepfactor)
+    generate_npy_for_single_file(args.input_verilog, args.bitwidth, args.output_npy, args.beta, args.alpha)
