@@ -16,7 +16,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 # 1b. For each generated verilog
     # 2. Pass generated verilog to analyzer (npy_generator.py) -> save result on results.csv + generate .npy
     # 3. callback training when analyzer is done (res_net_training.py)
-# 3. end execution
+# 4. end execution
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 SUBDIR = os.path.dirname(CURR_DIR)
@@ -100,7 +100,7 @@ def run_training(input_npy_path, conv_type, model_name, exact_acc_val, bitwidth)
         print(f"[TRAINING] Error on {filename}: {e}")
         raise
 
-def orchestrator(args):
+def orchestrator(args, subxpat_argv):
     
     start_timestamp = time.time()
     print(f"--- ORCHESTRATOR STARTED ---")
@@ -142,33 +142,23 @@ def orchestrator(args):
         def add_arg_if_not_none(args_list, arg_name, arg_value):
             if arg_value is not None:
                 args_list.extend([f"--{arg_name}", enum_to_str(arg_value)])
+
+        def add_all_args(args_list, args_namespace):
+            for arg_name, arg_value in vars(args_namespace).items():
+                if arg_name == "exact_benchmark" or f"--{arg_name.replace('_', '-')}" not in subxpat_argv:
+                    continue
+                if isinstance(arg_value, bool):
+                    if arg_value:
+                        args_list.append(f"--{arg_name.replace('_', '-')}")
+                else:
+                    add_arg_if_not_none(args_list, arg_name.replace("_", "-"), arg_value)
         
         subxpat_args = [
             venv_python, SCRIPT_XPAT,
             args.exact_benchmark, 
         ]
         
-        if args.min_labeling:
-            subxpat_args.append("--min-labeling")
-        
-        if args.subxpat:
-            subxpat_args.append("--subxpat")
-
-        add_arg_if_not_none(subxpat_args, "template", args.template)
-        add_arg_if_not_none(subxpat_args, "extraction-mode", args.extraction_mode)
-        add_arg_if_not_none(subxpat_args, "encoding", args.encoding)
-        add_arg_if_not_none(subxpat_args, "max-error", args.max_error)
-        add_arg_if_not_none(subxpat_args, "imax", args.imax)
-        add_arg_if_not_none(subxpat_args, "omax", args.omax)
-        add_arg_if_not_none(subxpat_args, "max-lpp", args.max_lpp)
-        add_arg_if_not_none(subxpat_args, "max-ppo", args.max_ppo)
-        add_arg_if_not_none(subxpat_args, "baseet", args.baseet)
-        add_arg_if_not_none(subxpat_args, "beta", args.beta)
-        add_arg_if_not_none(subxpat_args, "alpha", args.alpha)
-        add_arg_if_not_none(subxpat_args, "c-constant", args.c_constant)
-        add_arg_if_not_none(subxpat_args, "cnn-constraint", args.cnn_constraint)
-        add_arg_if_not_none(subxpat_args, "metric", args.metric)
-        add_arg_if_not_none(subxpat_args, "timeout", args.timeout)
+        add_all_args(subxpat_args, args)
 
         """
         subxpat_args = [
@@ -292,4 +282,4 @@ if __name__ == "__main__":
     sys.argv = original_argv
     vars(args).update(vars(specs))
     
-    orchestrator(args)
+    orchestrator(args, subxpat_argv)
