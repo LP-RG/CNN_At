@@ -141,8 +141,8 @@ def build_model(model_name: str, conv_type: int, bit_width: int, signed: bool, z
         zone=zone
     ).to(device)
 
-def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int = 1, bit_width: int = 8, signed: bool = False, zone: bool = False, exact_accuracy: float = 0, no_retraining = False):
-    input_name = multiplier_matrix.split("/")[-1]
+def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int = 1, bit_width: int = 8, signed: bool = False, zone: bool = False, exact_accuracy: float = 0, no_retraining = False, approx_post_calibration = False):
+    input_name = multiplier_matrix.split("/")[-1] if multiplier_matrix is not None else "None"
     print(f"Network training with parameters: model_name = {model_name}, conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}, input = {input_name}")
     models_dir = trained_models_path.rstrip('/')
     if not os.path.exists(models_dir):
@@ -202,9 +202,23 @@ def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int 
         if not os.path.exists(quant_path):
             raise RuntimeError("Allena prima il modello quantizzato.")
         print("Retrain modello approssimato (3 epoche)...")
-        model = build_model(model_name, conv_type=3, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
-        model.load_state_dict(torch.load(quant_path, weights_only=True))
-        calibration(model)
+
+        if approx_post_calibration == True:
+
+            print("Calibrazione modello quantizzato prima del retrain...")
+
+            exact_quant_model = build_model(model_name, conv_type=2, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+            exact_quant_model.load_state_dict(torch.load(quant_path, weights_only=True))
+            calibration(exact_quant_model)
+
+            model = build_model(model_name, conv_type=3, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+            model.load_state_dict(exact_quant_model.state_dict())
+        else:    
+            model = build_model(model_name, conv_type=3, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+            model.load_state_dict(torch.load(quant_path, weights_only=True))
+            calibration(model)
+
+
         criterion = nn.CrossEntropyLoss()
         lr = 0.001 if bit_width == 4 else 0.0001
         optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -262,6 +276,9 @@ if __name__ == "__main__":
     parser.add_argument("--input_path", nargs='?', default=None)
     parser.add_argument("--exact_accuracy", type=float, default=0)
     parser.add_argument("--no_retraining", action="store_true", default=False)
+    
+    parser.add_argument("--approx_post_calibration", action="store_true", help="To calibrate the model before switching to approximate multipliers.")
+
     args = parser.parse_args()
 
     device = "cuda"
@@ -278,7 +295,7 @@ if __name__ == "__main__":
             args.bit_width,
             args.signed,
             args.zone,
-            args.exact_accuracy
+            args.exact_accuracy,
         )
         print(acc)
         sys.exit(0)
@@ -299,7 +316,8 @@ if __name__ == "__main__":
             args.signed,
             args.zone,
             args.exact_accuracy,
-            args.no_retraining
+            args.no_retraining,
+            args.approx_post_calibration
         )
         print(acc)
         clean_gpu()
@@ -323,7 +341,8 @@ if __name__ == "__main__":
             args.signed,
             args.zone,
             args.exact_accuracy,
-            args.no_retraining
+            args.no_retraining,
+            args.approx_post_calibration
         )
         results[f] = acc
         clean_gpu()
