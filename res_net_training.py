@@ -10,6 +10,7 @@ import models.vgg16 as vgg16
 import models.alexnet_cifar10 as alexnet_cifar10
 import models.resnet56 as resnet56
 import modules.data_loaders as data_loader
+import modules.convolution as cc
 import argparse
 import sys
 import os
@@ -129,6 +130,11 @@ def test(model):
         print(f"Test Accuracy: {acc:.2f}%")
     return acc
 
+def change_model_conv_type(model, new_conv_type):
+    for m in model.modules():
+        if isinstance(m, cc.Conv2d_custom):
+            m.set_conv_type(new_conv_type)
+
 def build_model(model_name: str, conv_type: int, bit_width: int, signed: bool, zone: bool, multiplier_matrix=None, num_classes: int = 10):
     if model_name not in MODEL_FACTORIES:
         raise ValueError(f"Model '{model_name}' non supportato.")
@@ -207,12 +213,11 @@ def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int 
 
             print("Calibrazione modello quantizzato prima del retrain...")
 
-            exact_quant_model = build_model(model_name, conv_type=2, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
-            exact_quant_model.load_state_dict(torch.load(quant_path, weights_only=True))
-            calibration(exact_quant_model)
-
-            model = build_model(model_name, conv_type=3, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
-            model.load_state_dict(exact_quant_model.state_dict())
+            model = build_model(model_name, conv_type=2, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
+            model.load_state_dict(torch.load(quant_path, weights_only=True))
+            calibration(model)
+            change_model_conv_type(model, 3)
+            
         else:    
             model = build_model(model_name, conv_type=3, bit_width=bit_width, signed=signed, zone=zone, multiplier_matrix=multiplier_matrix, num_classes=num_classes)
             model.load_state_dict(torch.load(quant_path, weights_only=True))

@@ -52,6 +52,22 @@ class Conv2d_custom(nn.Conv2d):
             raise(NotImplementedError) 
         
 
+    def set_conv_type(self, conv_type):
+        self.conv_type = conv_type
+        if(self.conv_type == 1):
+            self.conv2d_op = None
+        elif(self.conv_type == 2):
+            self.conv2d_op = functions.QuantizedConv2d
+        elif(self.conv_type == 3):
+            self.conv2d_op = functions.ApproxConv2dSTE
+        elif(self.conv_type == 4):
+            self.conv2d_op = functions.ApproxConv2d
+        elif(self.conv_type == 5):
+            self.conv2d_op = functions.StatsQuantizedConv2d
+        else:
+            raise(NotImplementedError)
+
+
     def forward(self, input):
         if(self.conv_type == 1):
             return nn.functional.conv2d(input=input, 
