@@ -3,282 +3,187 @@ import os
 import time
 import sys
 import argparse
+import shutil
+import csv
+from threading import Lock
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-
-
-
-# PREREQUISITES:
-# 1. subxpat repo in the same parent directory of this repo
-# 2. Python 3.8+ installed
-# 3. updated Z3Log folder in subxpat/.venv/lib/python3.8/site-packages
-
-# 1a. Generate verilog files using /subxpat/main.py
-# 1b. For each generated verilog
-    # 2. Pass generated verilog to analyzer (npy_generator.py) -> save result on results.csv + generate .npy
-    # 3. callback training when analyzer is done (res_net_training.py)
-# 4. end execution
 
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
 SUBDIR = os.path.dirname(CURR_DIR)
-SUBXPAT_DIR = os.path.join(SUBDIR, "subxpat")
+SUBXPAT_DIR = os.path.join(SUBDIR, "A_A_T/subxpat")
 
 if SUBXPAT_DIR not in sys.path:
     sys.path.insert(0, SUBXPAT_DIR)
+
 try:
-    from sxpat.specifications import *
+    from subxpat.sxpat.specifications import *
 except ImportError as e:
     print(f"Error importing sxpat specifications: {e}")
     raise
 
-SUBXPAT_OUTPUT_DIR = os.path.join(SUBXPAT_DIR, "output", "ver")
-SCRIPT_XPAT = os.path.join(SUBXPAT_DIR, "main.py")
-
 SCRIPT_ANALIZER = os.path.join(CURR_DIR, "npy_generator.py")
-
 ANALIZER_OUTPUT_DIR = os.path.join(CURR_DIR, "npy_outputs")
-
 SCRIPT_TRAINING = os.path.join(CURR_DIR, "res_net_training.py")
+
+CSV_FILE = "results.csv"
+csv_lock = Lock()
+
+def get_log_paths(exp_name):
+    log_dir = os.path.join(CURR_DIR, "log", exp_name)
+    os.makedirs(log_dir, exist_ok=True)
+    return {
+        "subxpat": os.path.join(log_dir, "subxpat.log"),
+        "analyzer": os.path.join(log_dir, "analyzer.log"),
+        "training": os.path.join(log_dir, "training.log")
+    }
+
+def check_if_accuracy_exists_in_csv(npy_path):
+    filename_key = os.path.splitext(os.path.basename(npy_path))[0]
+    if not os.path.exists(CSV_FILE):
+        return None
+    with csv_lock:
+        with open(CSV_FILE, "r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row["file"] == filename_key:
+                    acc = row.get("accuracy", "").strip()
+                    if acc != "" and float(acc) != 0:
+                        return acc
+    return None
+
+def update_accuracy_in_csv(npy_path, accuracy):
+    filename_key = os.path.splitext(os.path.basename(npy_path))[0]
+    if not os.path.exists(CSV_FILE):
+        return
+    with csv_lock:
+        rows = []
+        updated = False
+        with open(CSV_FILE, "r") as f:
+            reader = csv.DictReader(f)
+            fieldnames = reader.fieldnames
+            for row in reader:
+                if row["file"] == filename_key:
+                    row["accuracy"] = str(accuracy)
+                    updated = True
+                rows.append(row)
+        if updated:
+            with open(CSV_FILE, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+
+def copy_project_to_exp(base: str, destination: str):
+    if os.path.exists(destination):
+        shutil.rmtree(destination)
+    shutil.copytree(base, destination, ignore=shutil.ignore_patterns(".git", "__pycache__"))
 
 def is_file_ready(file_path):
     try:
         subprocess.check_output(["lsof", "-w", file_path])
         return False
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, FileNotFoundError):
         return True
-    except FileNotFoundError:
-        return False
 
-
-def run_analizer(file_path, bitwidth, output_dir, beta, alpha):
+def run_analizer(file_path, bitwidth, output_dir, exp_name, log_path):
     filename = os.path.basename(file_path)
-    output_npy_name = os.path.splitext(filename)[0] + f"_beta{beta}_alpha{alpha}.npy"
+    output_npy_name = os.path.splitext(filename)[0] + f"_{exp_name}.npy"
     output_npy_path = os.path.join(output_dir, output_npy_name)
-    
-    cmd = [
-        sys.executable, SCRIPT_ANALIZER,
-        file_path,          
-        str(bitwidth),      
-        output_npy_path,
-        "--beta", str(beta),
-        "--alpha", str(alpha)
-    ]
-    
-    try:
-        with open("log/analizer_out.log", "a") as log_file:
-            log_file.write(f"\n--- ANALYZER STARTED: {filename} | beta: {beta}, alpha: {alpha} | date: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-            subprocess.run(cmd, check=True, stdout=log_file, stderr=subprocess.STDOUT)
-        print(f"[ANALIZER] Done: {filename}")
-        return output_npy_path 
-    except subprocess.CalledProcessError as e:
-        print(f"[ANALIZER] Error on {filename}: {e}")
-        raise
+    cmd = [sys.executable, SCRIPT_ANALIZER, file_path, str(bitwidth), output_npy_path, "--experiment-name", exp_name]
+    with open(log_path, "a") as lfile:
+        lfile.write(f"\n--- ANALYZING: {filename} ---\n")
+        subprocess.run(cmd, check=True, stdout=lfile, stderr=lfile)
+    return output_npy_path
 
-def run_training(input_npy_path, conv_type, model_name, exact_acc_val, bitwidth):
-    filename = os.path.basename(input_npy_path)
-
-    print(f"[TRAINING] Starting: {filename} | Conv Type: {conv_type} | Model: {model_name} | Exact Acc: {exact_acc_val} | Bitwidth: {bitwidth}")
-    
-    cmd = [
-        sys.executable, SCRIPT_TRAINING,
-        "--conv_type", str(conv_type),
-        "--model_name", str(model_name),
-        "--input_path", input_npy_path,
-        "--bit_width", str(bitwidth)
-    ]
-
-    if exact_acc_val is not None:
-         cmd.extend(["--exact_accuracy", str(exact_acc_val)])
-    
-    
-    try:
-        with open("log/training_out.log", "a") as log_file:
-            log_file.write(f"\n--- TRAINING STARTED: {filename} | Conv Type: {conv_type} | Model: {model_name} | Exact Acc: {exact_acc_val} | Bitwidth: {bitwidth} | date: {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
-            subprocess.run(cmd, check=True, stdout=log_file, stderr=subprocess.STDOUT)
-        print(f"[TRAINING] Done: {filename}")
+def run_training(input_npy_path, conv_type, model_name, exact_acc_val, bitwidth, log_path):
+    filename_key = os.path.splitext(os.path.basename(input_npy_path))[0]
+    existing_acc = check_if_accuracy_exists_in_csv(input_npy_path)
+    if existing_acc:
         return input_npy_path
-    except subprocess.CalledProcessError as e:
-        print(f"[TRAINING] Error on {filename}: {e}")
-        raise
+    cmd = [sys.executable, SCRIPT_TRAINING, "--conv_type", str(conv_type), "--model_name", str(model_name), "--input_path", input_npy_path, "--bit_width", str(bitwidth)]
+    if exact_acc_val is not None:
+        cmd.extend(["--exact_accuracy", str(exact_acc_val)])
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    with open(log_path, "a") as lfile:
+        lfile.write(f"\n--- TRAINING: {filename_key} ---\n")
+        lfile.write(result.stdout)
+    final_accuracy = None
+    for line in result.stdout.splitlines():
+        if line.startswith("FINAL_ACCURACY:"):
+            try:
+                final_accuracy = float(line.split(":")[1].strip())
+            except ValueError: pass
+            break
+    if final_accuracy is not None:
+        update_accuracy_in_csv(input_npy_path, final_accuracy)
+    return input_npy_path
 
 def orchestrator(args, subxpat_argv):
-    
     start_timestamp = time.time()
-    print(f"--- ORCHESTRATOR STARTED ---")
+    exp_name = args.experiment_name
+    logs = get_log_paths(exp_name)
+    print(f"--- ORCHESTRATOR STARTED ({exp_name}) ---")
+    EXP_SUBXPAT_DIR = os.path.join(CURR_DIR, exp_name)
+    copy_project_to_exp(SUBXPAT_DIR, EXP_SUBXPAT_DIR)
     
+    VENV_ACTIVATE = os.path.join(EXP_SUBXPAT_DIR, ".venv/bin/activate")
+    if not os.path.exists(VENV_ACTIVATE):
+        subprocess.run(["make", "setup"], cwd=EXP_SUBXPAT_DIR, check=True)
 
-    if not os.path.exists(ANALIZER_OUTPUT_DIR):
-        os.makedirs(ANALIZER_OUTPUT_DIR)
+    # Costruzione comando SubXpat pulita
+    subxpat_cmd_list = ["python3", "main.py"]
+    # Aggiunge gli argomenti originali passati da riga di comando all'orchestrator
+    subxpat_cmd_list.extend(subxpat_argv)
 
-    #setup venv if non existant
-    venv_python = os.path.join(SUBXPAT_DIR, ".venv", "bin", "python")
-    subprocess.run([venv_python, "-m", "pip", "install", "jinja2"], cwd=SUBXPAT_DIR, check=True)
+    full_shell_command = f"source {VENV_ACTIVATE} && {' '.join(subxpat_cmd_list)}"
 
+    try:
+        bitwidth = int(int(args.exact_benchmark.split("_i")[1].split("_")[0]) // 2)
+    except:
+        sys.exit("Benchmark format error")
 
-    if not os.path.exists(venv_python):
-        print(f"Virtual environment not found at {venv_python}")
-        print("Attempting to run 'make setup' in subxpat directory...")
-        try:
-            subprocess.run(["make", "setup"], cwd=SUBXPAT_DIR, check=True)
-            print("Setup completed successfully.")
-        except subprocess.CalledProcessError:
-            print("'make setup' failed. Please fix the subxpat repo manually.")
-            return
-        except FileNotFoundError:
-            print("'make' command not found. Cannot run setup.")
-            return
-        
-        if not os.path.exists(venv_python):
-            print("Error: 'make setup' finished but python executable is still missing.")
-            return
-
-    # --- 1a. START SUBXPAT ---
-    if os.path.exists(SCRIPT_XPAT):        
-        
-        def enum_to_str(val):
-            if hasattr(val, 'value'):
-                return str(val.value)
-            return str(val)
-
-        def add_arg_if_not_none(args_list, arg_name, arg_value):
-            if arg_value is not None:
-                args_list.extend([f"--{arg_name}", enum_to_str(arg_value)])
-
-        def add_all_args(args_list, args_namespace):
-            for arg_name, arg_value in vars(args_namespace).items():
-                if arg_name == "exact_benchmark" or f"--{arg_name.replace('_', '-')}" not in subxpat_argv:
-                    continue
-                if isinstance(arg_value, bool):
-                    if arg_value:
-                        args_list.append(f"--{arg_name.replace('_', '-')}")
-                else:
-                    add_arg_if_not_none(args_list, arg_name.replace("_", "-"), arg_value)
-        
-        subxpat_args = [
-            venv_python, SCRIPT_XPAT,
-            args.exact_benchmark, 
-        ]
-        
-        add_all_args(subxpat_args, args)
-
-        """
-        subxpat_args = [
-            venv_python, SCRIPT_XPAT,
-            "adder_i8_o5", "--max-lpp=8", "--max-ppo=32", "--max-error=16"
-        ]
-        """
-
-        # extract bitwidth from benchmark name
-        try:
-            bitwidth = int(int(args.exact_benchmark.split("_i")[1].split("_")[0]) // 2)
-            print(f"Extracted bitwidth: {bitwidth}")
-        except IndexError:
-            print("Errore: Il nome del benchmark non segue il formato standard (es. mul_i8_o5)")
-            sys.exit(1)
-
-        print(f"Launching SUBXPAT in background...")
-        my_env = os.environ.copy()
-        
-        my_env["PYTHONPATH"] = SUBXPAT_DIR + os.pathsep + my_env.get("PYTHONPATH", "")
-
-        venv_bin = os.path.dirname(venv_python)
-        my_env["PATH"] = venv_bin + os.pathsep + my_env.get("PATH", "")
-
-        proc_gen = subprocess.Popen(subxpat_args, cwd=SUBXPAT_DIR, env=my_env)
-    else:
-        print(f"ERROR: {SCRIPT_XPAT} not found.")
-        return
+    subxpat_log_file = open(logs['subxpat'], "w")
+    proc_gen = subprocess.Popen(["/bin/bash", "-c", full_shell_command], cwd=EXP_SUBXPAT_DIR, stdout=subxpat_log_file, stderr=subxpat_log_file)
 
     processed_files = set()
     training_futures = []
+    if not os.path.exists(ANALIZER_OUTPUT_DIR): os.makedirs(ANALIZER_OUTPUT_DIR)
 
-    gen_is_running = True
-
-    # 1b. for each new file created by subxpat launch analizer + training
-    with ProcessPoolExecutor() as analizer_executor, ThreadPoolExecutor(max_workers=4) as training_executor:
-
-        pending_locked_files = False
-
-        while gen_is_running or len(training_futures) > 0 or pending_locked_files:
-
-            #print(f"Checking for new files... (Gen Running: {gen_is_running} | Pending Locked Files: {pending_locked_files} | Training Queue: {len(training_futures)})")
-
-            pending_locked_files = False
-
+    with ProcessPoolExecutor() as analizer_executor, ThreadPoolExecutor(max_workers=2) as training_executor:
+        while proc_gen.poll() is None or len(training_futures) > 0:
             training_futures = [f for f in training_futures if not f.done()]
-
-            gen_is_running = proc_gen.poll() is None
-            files_to_process = []
-            
-            if os.path.exists(SUBXPAT_OUTPUT_DIR):
-                try:
-                    for f in os.listdir(SUBXPAT_OUTPUT_DIR):
-                        full_path = os.path.join(SUBXPAT_OUTPUT_DIR, f)
-                        if os.path.isfile(full_path) and full_path not in processed_files:
-                            try:
-                                # Check if file is created by current run
-                                if os.path.getmtime(full_path) > start_timestamp:
-                                    files_to_process.append(full_path)
-                            except FileNotFoundError:
-                                continue
-                except FileNotFoundError:
-                    pass
-
-            for file_path in files_to_process:
-
-                if not is_file_ready(file_path):
-                    pending_locked_files = True
-                    continue
-
-                processed_files.add(file_path)
-                
-                # 2. Submit ANALYZER (run npy_generator.py)
-                future_ana = analizer_executor.submit(
-                    run_analizer, 
-                    file_path, 
-                    bitwidth, 
-                    ANALIZER_OUTPUT_DIR,
-                    str(args.beta),
-                    str(args.alpha)
-                )
-                
-                # 3. Callback TRAINING (run res_net_training.py) when ANALYZER is done
-                def schedule_training(f_ana):
-                    try:
-                        npy_path = f_ana.result()
-                        t_fut = training_executor.submit(
-                            run_training, 
-                            npy_path, 
-                            args.conv_type, 
-                            args.model_name,
-                            args.exact_accuracy,
-                            bitwidth 
-                        )
-                        training_futures.append(t_fut)
-                    except Exception as e:
-                        print(f"Skip Training: Analysis Error -> {e}")
-
-                future_ana.add_done_callback(schedule_training)
-
+            ver_dir = os.path.join(EXP_SUBXPAT_DIR, "output", "ver")
+            if os.path.exists(ver_dir):
+                for f in os.listdir(ver_dir):
+                    full_path = os.path.join(ver_dir, f)
+                    if not os.path.isfile(full_path) or full_path in processed_files: continue
+                    if os.path.getmtime(full_path) <= start_timestamp: continue
+                    if not is_file_ready(full_path): continue
+                    processed_files.add(full_path)
+                    future_ana = analizer_executor.submit(run_analizer, full_path, bitwidth, ANALIZER_OUTPUT_DIR, exp_name, logs['analyzer'])
+                    def schedule_training(f_ana):
+                        try:
+                            npy_path = f_ana.result()
+                            t_fut = training_executor.submit(run_training, npy_path, args.conv_type, args.model_name, args.exact_accuracy, bitwidth, logs['training'])
+                            training_futures.append(t_fut)
+                        except Exception as e: print(f"Error: {e}")
+                    future_ana.add_done_callback(schedule_training)
             time.sleep(1)
 
+    subxpat_log_file.close()
     print("--- COMPLETED ---")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Orchestrator for Subxpat (see Subxpat help for infos) -> Analyzer -> Training")
-    
-    
-    # Training arguments
-    parser.add_argument("--conv-type", type=str, default="3", help="Conv type for training (Default: 3)")
-    parser.add_argument("--model-name", type=str, default="resnet", help="Model name for training (Default: resnet)")
-    parser.add_argument("--exact-accuracy", type=int, default=None, help="Integer value for --exact-accuracy in training")
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--conv-type", default="3")
+    parser.add_argument("--model-name", default="resnet")
+    parser.add_argument("--exact-accuracy", type=int, default=None)
+    parser.add_argument("--experiment-name", required=True)
     args, subxpat_argv = parser.parse_known_args()
-
+    
+    # Carichiamo le specifiche solo per validazione e per estrarre exact_benchmark
     original_argv = sys.argv[:]
     sys.argv = [sys.argv[0]] + subxpat_argv
-    
     specs = Specifications.parse_args()
-    
     sys.argv = original_argv
     vars(args).update(vars(specs))
     
