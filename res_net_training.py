@@ -15,10 +15,6 @@ import sys
 import os
 import time
 import gc
- 
-
-print(torch.__version__)
-
 
 trained_models_path = "./trained_models/"
 device = "cuda"
@@ -29,7 +25,6 @@ MODEL_FACTORIES = {
     "alexnet_cifar10": alexnet_cifar10.AlexNetCIFAR10,
     "resnet56": resnet56.ResNet56_CIFAR100,
     "resnet8": resnet8.ResNet8
-
 }
 train_loader = None
 test_loader = None
@@ -256,6 +251,7 @@ def clean_gpu(model=None, optimizer=None, scheduler=None):
     torch.cuda.empty_cache()
     gc.collect()
     torch.cuda.synchronize()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run training with simplified logic and model_name routing.")
     parser.add_argument("--model_name", type=str, default="resnet")
@@ -305,7 +301,7 @@ if __name__ == "__main__":
             args.exact_accuracy,
             args.no_retraining
         )
-        print(acc)
+        print(f"FINAL_ACCURACY:{acc}")
         clean_gpu()
         sys.exit(0)
     # Se p è una cartella
@@ -329,6 +325,7 @@ if __name__ == "__main__":
             args.exact_accuracy,
             args.no_retraining
         )
+        print(f"FINAL_ACCURACY:{acc}")
         results[f] = acc
         clean_gpu()
 
