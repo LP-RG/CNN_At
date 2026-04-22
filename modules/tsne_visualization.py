@@ -246,7 +246,7 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
                              max_iter=1000, max_train=2000, max_test=1000,
                              save_dir="./plots", classes=None, seed=42,
                              show_misclassifications=False, image_shape=None,
-                             feature_space="fc1"):
+                             feature_space="fc1", output_tag=None):
     """Run t-SNE with CNN misclassification overlay."""
     rng = np.random.default_rng(seed)
 
@@ -321,10 +321,11 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
     #   plots/<feature_space>/misclassified/...
     tsne_out_dir = os.path.join(save_dir, feature_space, "tsne")
     mis_out_dir = os.path.join(save_dir, feature_space, "misclassified")
+    tag = f"_{output_tag}" if output_tag else ""
 
     save_path = os.path.join(
         tsne_out_dir,
-        f"tsne_{model_name}{classes_tag}.png",
+        f"tsne_{model_name}{tag}{classes_tag}.png",
     )
     classes_str = (f"classes {classes.tolist()}"
                    if classes is not None else "all classes")
@@ -342,7 +343,7 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
             raise ValueError("image_shape=(C, H, W) is required when show_misclassifications=True")
         errors_path = os.path.join(
             mis_out_dir,
-            f"misclassified_{model_name}{classes_tag}.png",
+            f"misclassified_{model_name}{tag}{classes_tag}.png",
         )
         show_misclassified_images(X_test_pixels, y_test_sub, y_pred_sub,
                                   image_shape=image_shape, classes=classes,
