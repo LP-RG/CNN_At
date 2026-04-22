@@ -10,6 +10,7 @@ import models.vgg16 as vgg16
 import models.alexnet_cifar10 as alexnet_cifar10
 import models.resnet56 as resnet56
 import modules.data_loaders as data_loader
+import modules.tsne_visualization as tsne_vis
 import argparse
 import sys
 import os
@@ -18,6 +19,17 @@ import gc
 
 trained_models_path = "./trained_models/"
 device = "cuda"
+
+# (C, H, W) in PyTorch convention, matching each model's input tensor
+MODEL_IMAGE_SHAPES = {
+    "lenet5":          (1, 32, 32),
+    "resnet":          (3, 32, 32),
+    "resnet8":         (3, 32, 32),
+    "vgg16":           (3, 32, 32),
+    "alexnet_cifar10": (3, 32, 32),
+    "resnet56":        (3, 32, 32),
+}
+
 MODEL_FACTORIES = {
     "resnet": resnet20.ResNet20,
     "lenet5": lenet5.LeNet5,
@@ -142,7 +154,7 @@ def build_model(model_name: str, conv_type: int, bit_width: int, signed: bool, z
     ).to(device)
 
 def new_training_method(model_name: str, multiplier_matrix=None, conv_type: int = 1, bit_width: int = 8, signed: bool = False, zone: bool = False, exact_accuracy: float = 0, no_retraining = False):
-    input_name = multiplier_matrix.split("/")[-1]
+    input_name = multiplier_matrix.split("/")[-1] if multiplier_matrix is not None else "None"
     print(f"Network training with parameters: model_name = {model_name}, conv_type = {conv_type}, bit_width = {bit_width}, signed = {signed}, input = {input_name}")
     models_dir = trained_models_path.rstrip('/')
     if not os.path.exists(models_dir):
@@ -252,6 +264,71 @@ def clean_gpu(model=None, optimizer=None, scheduler=None):
     torch.cuda.empty_cache()
     gc.collect()
     torch.cuda.synchronize()
+
+# ---------------------------------------------------------- #
+def run_tsne_experiment(model_name: str, perplexity: int = 30,
+                        max_iter: int = 1000,
+                        max_train: int = 2000, max_test: int = 1000,
+                        classes=None, seed=42, show_misclassifications: bool = False,
+                        feature_space: str = "fc1",
+                        bit_width: int = 8):
+    """Load trained CNN checkpoints and visualise misclassifications with t-SNE.
+
+    Parameters
+    ----------
+    model_name : str
+        Must match one of the keys in MODEL_FACTORIES
+    perplexity, max_iter : int
+        t-SNE hyperparameters forwarded to sklearn.
+    max_train, max_test : int
+        Maximum number of samples taken from each split for t-SNE (random
+        subsample).
+    classes : list of int or None
+        Subset of class labels to visualise.  None shows all.
+    seed : int
+        Random seed for subsampling and t-SNE initialisation.
+    show_misclassifications : bool
+        If True, additionally saves a grid of misclassified images.
+        (Requires `image_shape` to be known for the selected model.)
+    feature_space : str
+        Vector space used as t-SNE input:
+        - "fc1" uses LeNet5's 84-d activations (recommended)
+        - "pixels" uses flattened raw input pixels
+    bit_width : int
+        Bit width used to resolve the quantized checkpoint filename
+        (e.g., <model>_q8.pth).
+    """
+    # _classes is set by set_data_loaders()
+    num_classes = _classes if _classes else 10
+    exact_path = os.path.join(trained_models_path, f"{model_name}.pth")
+    image_shape = MODEL_IMAGE_SHAPES.get(model_name.lower())
+
+    if not os.path.exists(exact_path):
+        raise FileNotFoundError(
+            f"No exact checkpoint at '{exact_path}'. "
+            f"Train first with --model_name {model_name} --conv_type 1."
+        )
+    model = build_model(model_name, conv_type=1, bit_width=bit_width,
+                        signed=False, zone=False, multiplier_matrix=None,
+                        num_classes=num_classes)
+    model.load_state_dict(torch.load(exact_path, weights_only=True))
+    model.to(device)
+    print(f"\n--- Running t-SNE ({feature_space}) ---")
+    tsne_vis.run_tsne_cnn_experiment(
+            model, train_loader, test_loader, device,
+            model_name=model_name,
+            perplexity=perplexity,
+            max_iter=max_iter,
+            max_train=max_train,
+            max_test=max_test,
+            classes=classes,
+            seed=seed,
+            show_misclassifications=show_misclassifications,
+            image_shape=image_shape,
+            feature_space=feature_space,
+    )
+
+# ---------------------------------------------------------- #
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run training with simplified logic and model_name routing.")
     parser.add_argument("--model_name", type=str, default="resnet")
@@ -262,12 +339,48 @@ if __name__ == "__main__":
     parser.add_argument("--input_path", nargs='?', default=None)
     parser.add_argument("--exact_accuracy", type=float, default=0)
     parser.add_argument("--no_retraining", action="store_true", default=False)
+    # ---------------------------------------------------------- #
+    parser.add_argument("--tsne", action="store_true", default=False,
+                        help="Visualise input-space t-SNE with CNN misclassifications.")
+    parser.add_argument("--tsne_perplexity", type=int, default=30)
+    parser.add_argument("--tsne_max_iter", type=int, default=1000)
+    parser.add_argument("--tsne_max_train", type=int, default=2000)
+    parser.add_argument("--tsne_max_test", type=int, default=1000)
+    parser.add_argument("--tsne_seed", type=int, default=42)
+    parser.add_argument("--tsne_classes", type=int, nargs="+", default=None,
+                        metavar="C", help="Classes to visualise, e.g. --tsne_classes 5 8")
+    parser.add_argument("--show_misclassifications", action="store_true", default=False,
+                        help="After t-SNE, display a grid of CNN misclassified images.")
+    parser.add_argument("--tsne_feature_space", type=str, default="fc1",
+                        choices=["fc1", "pixels"],
+                        help="Feature space for t-SNE: fc1 activations or raw pixels.")
+    # ---------------------------------------------------------- #
     args = parser.parse_args()
 
     device = "cuda"
     results = {}
     start = time.time()
     p = args.input_path
+
+    # ---------------------------------------------------------- #
+    if args.tsne:
+        setup_seed(args.tsne_seed)
+        set_data_loaders(args.model_name)
+        run_tsne_experiment(
+            args.model_name,
+            perplexity=args.tsne_perplexity,
+            max_iter=args.tsne_max_iter,
+            max_train=args.tsne_max_train,
+            max_test=args.tsne_max_test,
+            classes=args.tsne_classes,
+            seed=args.tsne_seed,
+            show_misclassifications=args.show_misclassifications,
+            feature_space=args.tsne_feature_space,
+            bit_width=args.bit_width,
+        )
+        sys.exit(0)
+
+    # ---------------------------------------------------------- #
     if p is None:
         setup_seed(42)
         set_data_loaders(args.model_name)  
