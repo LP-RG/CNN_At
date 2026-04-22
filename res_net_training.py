@@ -37,7 +37,6 @@ MODEL_FACTORIES = {
     "alexnet_cifar10": alexnet_cifar10.AlexNetCIFAR10,
     "resnet56": resnet56.ResNet56_CIFAR100,
     "resnet8": resnet8.ResNet8
-
 }
 train_loader = None
 test_loader = None
@@ -414,7 +413,7 @@ if __name__ == "__main__":
             args.exact_accuracy,
             args.no_retraining
         )
-        print(acc)
+        print(f"FINAL_ACCURACY:{acc}")
         clean_gpu()
         sys.exit(0)
     # Se p è una cartella
@@ -438,6 +437,7 @@ if __name__ == "__main__":
             args.exact_accuracy,
             args.no_retraining
         )
+        print(f"FINAL_ACCURACY:{acc}")
         results[f] = acc
         clean_gpu()
 

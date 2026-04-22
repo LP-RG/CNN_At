@@ -161,10 +161,17 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Downloaded datasets (large, re-downloadable via torchvision)
+
+# Custom ignores
+log/
+npy_outputs/
+temp/
+trained_models/
+report/
 data/
+# Ignore VS Code settings
+.vscode/
 
 # Generated plots (reproducible by re-running --tsne)
 plots/
 
-trained_models/
