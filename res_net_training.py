@@ -20,6 +20,24 @@ import gc
 trained_models_path = "./trained_models/"
 device = "cuda"
 
+MODEL_TSNE_LAYER_ALIASES = {
+    "lenet5": {
+        "penultimate": "fc1",
+        "logits": "fc2",
+        "conv1": "layer1.0",
+        "conv2": "layer2.0",
+        "block1": "layer1",
+        "block2": "layer2",
+    }
+}
+
+
+def resolve_tsne_layer_path(model_name: str, requested_layer: str) -> str:
+    """Resolve user-provided layer alias/path to a concrete module path."""
+    model_key = model_name.lower()
+    alias_map = MODEL_TSNE_LAYER_ALIASES.get(model_key, {})
+    return alias_map.get(requested_layer, requested_layer)
+
 # (C, H, W) in PyTorch convention, matching each model's input tensor
 MODEL_IMAGE_SHAPES = {
     "lenet5":          (1, 32, 32),
@@ -289,7 +307,8 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
                         max_iter: int = 1000,
                         max_train: int = 2000, max_test: int = 1000,
                         classes=None, seed=42, show_misclassifications: bool = False,
-                        feature_space: str = "fc1",
+                        feature_space: str = "layer",
+                        feature_layer: str = "penultimate",
                         stages=None, tsne_multiplier_path: str = None,
                         bit_width: int = 8):
     """Load trained CNN checkpoints and visualise misclassifications with t-SNE.
@@ -312,8 +331,11 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
         (Requires `image_shape` to be known for the selected model.)
     feature_space : str
         Vector space used as t-SNE input:
-        - "fc1" uses LeNet5's 84-d activations (recommended)
+        - "layer" uses activations from a hooked module path/alias
         - "pixels" uses flattened raw input pixels
+    feature_layer : str
+        Layer alias/path used when `feature_space="layer"`.
+        For lenet5 aliases include: penultimate, logits, conv1, conv2, block1, block2.
     stages : list[str] or None
         Which hardware stages to visualise. Allowed values are:
         "exact", "quantized", "approximate".
@@ -331,6 +353,10 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
     quant_path = os.path.join(trained_models_path, f"{model_name}_q{bit_width}.pth")
     stages = stages or ["exact"]
     image_shape = MODEL_IMAGE_SHAPES.get(model_name.lower())
+    feature_layer_path = None
+    if feature_space == "layer":
+        feature_layer_path = resolve_tsne_layer_path(model_name, feature_layer)
+        print(f"Using layer '{feature_layer}' resolved to '{feature_layer_path}'.")
 
     for stage in stages:
         if stage == "exact":
@@ -373,8 +399,23 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
                                 signed=False, zone=False,
                                 multiplier_matrix=tsne_multiplier_path,
                                 num_classes=num_classes)
-            model.load_state_dict(torch.load(quant_path, weights_only=True), strict=False)
-            output_tag = "approximate"
+            approx_tag = os.path.splitext(os.path.basename(tsne_multiplier_path))[0]
+            approx_retrained_best_path = os.path.join(
+                trained_models_path, f"{model_name}_a{bit_width}_{approx_tag}_retrained_best.pth"
+            )
+            if os.path.exists(approx_retrained_best_path):
+                print(f"Loading retrained approximate checkpoint: {approx_retrained_best_path}")
+                model.load_state_dict(
+                    torch.load(approx_retrained_best_path, weights_only=True),
+                    strict=False
+                )
+            else:
+                print(
+                    f"[WARN] Retrained approximate checkpoint not found for '{approx_tag}'. "
+                    f"Falling back to quantized checkpoint: {quant_path}"
+                )
+                model.load_state_dict(torch.load(quant_path, weights_only=True), strict=False)
+            output_tag = f"approximate_{approx_tag}"
         else:
             raise ValueError(
                 f"Unknown stage '{stage}'. Use one of: exact, quantized, approximate."
@@ -401,6 +442,7 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
             image_shape=image_shape,
             feature_space=feature_space,
             output_tag=output_tag,
+            feature_layer_path=feature_layer_path,
         )
 
 # ---------------------------------------------------------- #
@@ -426,9 +468,12 @@ if __name__ == "__main__":
                         metavar="C", help="Classes to visualise, e.g. --tsne_classes 5 8")
     parser.add_argument("--show_misclassifications", action="store_true", default=False,
                         help="After t-SNE, display a grid of CNN misclassified images.")
-    parser.add_argument("--tsne_feature_space", type=str, default="fc1",
-                        choices=["fc1", "pixels"],
-                        help="Feature space for t-SNE: fc1 activations or raw pixels.")
+    parser.add_argument("--tsne_feature_space", type=str, default="layer",
+                        choices=["layer", "pixels"],
+                        help="Feature space for t-SNE: arbitrary layer hook or raw pixels.")
+    parser.add_argument("--tsne_feature_layer", type=str, default="penultimate",
+                        help=("Layer alias/path used when --tsne_feature_space layer. "
+                              "For lenet5 aliases: penultimate, logits, conv1, conv2, block1, block2"))
     parser.add_argument("--tsne_stages", type=str, nargs="+", default=["exact"],
                         choices=["exact", "quantized", "approximate"],
                         help="Stages to visualise: exact, quantized, approximate.")
@@ -456,6 +501,7 @@ if __name__ == "__main__":
             seed=args.tsne_seed,
             show_misclassifications=args.show_misclassifications,
             feature_space=args.tsne_feature_space,
+            feature_layer=args.tsne_feature_layer,
             stages=args.tsne_stages,
             tsne_multiplier_path=args.tsne_multiplier_path,
             bit_width=args.bit_width,

@@ -24,7 +24,6 @@ def _filter_loader(loader, classes):
         num_workers=loader.num_workers,
     )
 
-
 def _subsample_loader(loader, n_max, rng):
     """Return a new DataLoader with at most n_max randomly selected samples."""
     n = min(n_max, len(loader.dataset))
@@ -36,7 +35,6 @@ def _subsample_loader(loader, n_max, rng):
         shuffle=False,
         num_workers=loader.num_workers,
     )
-
 
 def _collect_inputs(loader):
     """Collect raw inputs and labels from a DataLoader without running the model."""
@@ -73,21 +71,28 @@ def _collect_predictions(model, loader, device):
     y_pred = torch.cat(preds_list).numpy()
     return X.reshape(len(X), -1), y, y_pred    # flatten images to (n, 1024)
 
-#TODO: Check for way to iterate trough the layers of the arbitrary models
-#--------------------------------------------------
-def _collect_fc1_features(model, loader, device, collect_preds=False):
-    """Collect fc1 activations via forward hook(lenet5 only); optionally return predictions."""
-    if not hasattr(model, "fc1"):
-        raise ValueError("Model has no 'fc1' layer for feature-hook extraction.")
+def _collect_layer_features(model, loader, device, layer_path, collect_preds=False):
+    """Collect activations from an arbitrary module path via forward hook."""
+    modules = dict(model.named_modules())
+    if layer_path not in modules:
+        available = ", ".join(sorted(modules.keys()))
+        raise ValueError(
+            f"Layer '{layer_path}' not found in model. Available modules: {available}"
+        )
 
+    target_layer = modules[layer_path]
     model.eval()
     features_list, labels_list, preds_list = [], [], []
 
     def _hook(_module, _inputs, output):
-        # output shape for LeNet5 fc1: (batch, 84)
-        features_list.append(output.detach().cpu())
+        # Flatten non-batch dims so t-SNE always receives (N, D)
+        if isinstance(output, tuple):
+            output = output[0]
+        feat = output.detach().cpu()
+        feat = feat.reshape(feat.shape[0], -1)
+        features_list.append(feat)
 
-    handle = model.fc1.register_forward_hook(_hook)
+    handle = target_layer.register_forward_hook(_hook)
     try:
         with torch.no_grad():
             for inputs, labels in loader:
@@ -107,7 +112,6 @@ def _collect_fc1_features(model, loader, device, collect_preds=False):
         return X_feat, y, y_pred
     return X_feat, y
 
-#--------------------------------------------------
 def plot_tsne_embedding_cnn(X_2d, y, title=None, y_pred=None, test_mask=None,
                             save_path=None):
     """
@@ -246,7 +250,8 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
                              max_iter=1000, max_train=2000, max_test=1000,
                              save_dir="./plots", classes=None, seed=42,
                              show_misclassifications=False, image_shape=None,
-                             feature_space="fc1", output_tag=None):
+                             feature_space="layer", output_tag=None,
+                             feature_layer_path=None):
     """Run t-SNE with CNN misclassification overlay."""
     rng = np.random.default_rng(seed)
 
@@ -263,27 +268,30 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
     n_train = len(train_loader.dataset)
     n_test  = len(test_loader.dataset)
     
-    if feature_space == "fc1":
-        print("Collecting training fc1 features...")
-        X_train_sub, y_train_sub = _collect_fc1_features(model, train_loader, device)
+    if feature_space == "layer":
+        if feature_layer_path is None:
+            raise ValueError("feature_layer_path is required when feature_space='layer'")
+        print(f"Collecting training features from layer '{feature_layer_path}'...")
+        X_train_sub, y_train_sub = _collect_layer_features(
+            model, train_loader, device, layer_path=feature_layer_path
+        )
     elif feature_space == "pixels":
         print("Collecting training inputs...")
         X_train_sub, y_train_sub = _collect_inputs(train_loader)
     else:
-        raise ValueError("feature_space must be either 'fc1' or 'pixels'")
+        raise ValueError("feature_space must be one of: 'layer', 'pixels'")
 
     print("Collecting CNN predictions on test set...")
-    if feature_space == "fc1":
-        X_test_sub, y_test_sub, y_pred_sub = _collect_fc1_features(
-            model, test_loader, device, collect_preds=True
+    if feature_space == "layer":
+        X_test_sub, y_test_sub, y_pred_sub = _collect_layer_features(
+            model, test_loader, device, layer_path=feature_layer_path, collect_preds=True
         )
         if show_misclassifications:
-            # For the misclassification image grid we need the *original pixels*.
-            # In fc1 mode, X_test_sub contains 84-d features, not flattened images.
+            # In layer mode, X_test_sub contains hooked features, not images.
             X_test_pixels, y_test_pixels = _collect_inputs(test_loader)
             if not np.array_equal(y_test_pixels, y_test_sub):
                 raise RuntimeError(
-                    "Mismatch between pixel-label order and fc1-label order while "
+                    "Mismatch between pixel-label order and layer-label order while "
                     "preparing misclassification image grid."
                 )
     else:
@@ -322,16 +330,27 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
     tsne_out_dir = os.path.join(save_dir, feature_space, "tsne")
     mis_out_dir = os.path.join(save_dir, feature_space, "misclassified")
     tag = f"_{output_tag}" if output_tag else ""
+    layer_tag = ""
+    if feature_space == "layer" and feature_layer_path:
+        safe_layer = (feature_layer_path
+                      .replace(".", "-")
+                      .replace("/", "-")
+                      .replace("[", "")
+                      .replace("]", ""))
+        layer_tag = f"_layer-{safe_layer}"
 
     save_path = os.path.join(
         tsne_out_dir,
-        f"tsne_{model_name}{tag}{classes_tag}.png",
+        f"tsne_{model_name}{layer_tag}{tag}{classes_tag}.png",
     )
     classes_str = (f"classes {classes.tolist()}"
                    if classes is not None else "all classes")
+    layer_str = feature_layer_path if feature_space == "layer" else "raw-pixels"
+    run_tag_str = output_tag if output_tag is not None else "default"
     plot_tsne_embedding_cnn(
         X_2d, y_all,
         title=(f"t-SNE of {model_name} {feature_space} features ({classes_str})\n"
+               f"run: {run_tag_str} | layer: {layer_str}\n"
                f"red \u2715 = CNN misclassification | acc: {acc:.1%}"),
         y_pred=y_pred_sub,
         test_mask=test_mask,
@@ -343,7 +362,7 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
             raise ValueError("image_shape=(C, H, W) is required when show_misclassifications=True")
         errors_path = os.path.join(
             mis_out_dir,
-            f"misclassified_{model_name}{tag}{classes_tag}.png",
+            f"misclassified_{model_name}{layer_tag}{tag}{classes_tag}.png",
         )
         show_misclassified_images(X_test_pixels, y_test_sub, y_pred_sub,
                                   image_shape=image_shape, classes=classes,
