@@ -325,10 +325,11 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
     classes_tag = ("_classes" + "-".join(str(c) for c in classes)
                    if classes is not None else "")
     # Organise outputs into clear subfolders:
-    #   plots/<feature_space>/tsne/...
-    #   plots/<feature_space>/misclassified/...
-    tsne_out_dir = os.path.join(save_dir, feature_space, "tsne")
-    mis_out_dir = os.path.join(save_dir, feature_space, "misclassified")
+    #   plots/<feature_space>/<model_name>/tsne/...
+    #   plots/<feature_space>/<model_name>/misclassified/...
+    # Layer/stage details are already encoded in the filenames.
+    tsne_out_dir = os.path.join(save_dir, feature_space, model_name, "tsne")
+    mis_out_dir = os.path.join(save_dir, feature_space, model_name, "misclassified")
     tag = f"_{output_tag}" if output_tag else ""
     layer_tag = ""
     if feature_space == "layer" and feature_layer_path:

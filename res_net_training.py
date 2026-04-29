@@ -3,6 +3,7 @@ import numpy as np
 import mat_mul
 import torch.nn as nn
 import torch.optim as optim
+import modules.convolution as cc
 import models.resnet8 as resnet8
 import models.resnet20 as resnet20
 import models.lenet5 as lenet5
@@ -20,23 +21,15 @@ import gc
 trained_models_path = "./trained_models/"
 device = "cuda"
 
-MODEL_TSNE_LAYER_ALIASES = {
-    "lenet5": {
-        "penultimate": "fc1",
-        "logits": "fc2",
-        "conv1": "layer1.0",
-        "conv2": "layer2.0",
-        "block1": "layer1",
-        "block2": "layer2",
-    }
+MODEL_NAME_ALIASES = {
+    # file name is resnet20.py, checkpoint/datasets use "resnet"
+    "resnet20": "resnet",
+    "lenet": "lenet5",
 }
 
-
-def resolve_tsne_layer_path(model_name: str, requested_layer: str) -> str:
-    """Resolve user-provided layer alias/path to a concrete module path."""
-    model_key = model_name.lower()
-    alias_map = MODEL_TSNE_LAYER_ALIASES.get(model_key, {})
-    return alias_map.get(requested_layer, requested_layer)
+def normalize_model_name(model_name: str) -> str:
+    name = (model_name or "").strip().lower()
+    return MODEL_NAME_ALIASES.get(name, name)
 
 # (C, H, W) in PyTorch convention, matching each model's input tensor
 MODEL_IMAGE_SHAPES = {
@@ -335,7 +328,8 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
         - "pixels" uses flattened raw input pixels
     feature_layer : str
         Layer alias/path used when `feature_space="layer"`.
-        For lenet5 aliases include: penultimate, logits, conv1, conv2, block1, block2.
+        Supported aliases include: penultimate, logits, conv1, conv2, block1, block2.
+        You can also pass an explicit `named_modules()` path (e.g. `layer2.0`).
     stages : list[str] or None
         Which hardware stages to visualise. Allowed values are:
         "exact", "quantized", "approximate".
@@ -347,16 +341,76 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
         Bit width used to resolve the quantized checkpoint filename
         (e.g., <model>_q8.pth).
     """
+    model_name = normalize_model_name(model_name)
+
     # _classes is set by set_data_loaders()
     num_classes = _classes if _classes else 10
     exact_path = os.path.join(trained_models_path, f"{model_name}.pth")
     quant_path = os.path.join(trained_models_path, f"{model_name}_q{bit_width}.pth")
     stages = stages or ["exact"]
     image_shape = MODEL_IMAGE_SHAPES.get(model_name.lower())
-    feature_layer_path = None
-    if feature_space == "layer":
-        feature_layer_path = resolve_tsne_layer_path(model_name, feature_layer)
-        print(f"Using layer '{feature_layer}' resolved to '{feature_layer_path}'.")
+    resolved_layer_path = None
+
+    def resolve_tsne_layer_path(model: nn.Module, requested_layer: str) -> str:
+        """
+        Resolve a user-friendly alias into a concrete `named_modules()` path
+        for forward-hook feature extraction.
+        """
+        if requested_layer is None:
+            raise ValueError("feature_layer cannot be None when feature_space='layer'")
+
+        modules = dict(model.named_modules())
+        if requested_layer in modules:
+            return requested_layer
+
+        alias = requested_layer.lower()
+
+        linear_modules = [(n, m) for n, m in model.named_modules() if isinstance(m, nn.Linear)]
+        conv_modules = [(n, m) for n, m in model.named_modules() if isinstance(m, cc.Conv2d_custom)]
+        avg_pool_modules = [(n, m) for n, m in model.named_modules() if isinstance(m, nn.AdaptiveAvgPool2d)]
+
+        if alias == "logits":
+            if not linear_modules:
+                raise ValueError("Alias 'logits' requires at least one nn.Linear in the model.")
+            return linear_modules[-1][0]
+
+        if alias == "penultimate":
+            # Usual case: second-to-last linear.
+            if len(linear_modules) >= 2:
+                return linear_modules[-2][0]
+            # ResNet-style: only one linear (fc); use avg_pool output as features before fc.
+            if avg_pool_modules:
+                return avg_pool_modules[-1][0]
+            if linear_modules:
+                return linear_modules[0][0]
+            raise ValueError("Alias 'penultimate' could not be resolved (no Linear / AdaptiveAvgPool2d found).")
+
+        if alias == "conv1":
+            if not conv_modules:
+                raise ValueError("Alias 'conv1' requires Conv2d_custom layers in the model.")
+            return conv_modules[0][0]
+
+        if alias == "conv2":
+            if len(conv_modules) >= 2:
+                return conv_modules[1][0]
+            if conv_modules:
+                return conv_modules[0][0]
+            raise ValueError("Alias 'conv2' requires at least one Conv2d_custom layer in the model.")
+
+        if alias == "block1":
+            for candidate in ("layer1", "block1", "pool1"):
+                if candidate in modules:
+                    return candidate
+            raise ValueError("Alias 'block1' could not be resolved (expected one of: layer1/block1/pool1).")
+
+        if alias == "block2":
+            for candidate in ("layer2", "block2", "pool2"):
+                if candidate in modules:
+                    return candidate
+            raise ValueError("Alias 'block2' could not be resolved (expected one of: layer2/block2/pool2).")
+
+        # Unknown alias: treat as an explicit module path.
+        return requested_layer
 
     for stage in stages:
         if stage == "exact":
@@ -382,11 +436,6 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
             model.load_state_dict(torch.load(quant_path, weights_only=True))
             output_tag = "quantized"
         elif stage == "approximate":
-            if not os.path.exists(quant_path):
-                raise FileNotFoundError(
-                    f"No quantized checkpoint at '{quant_path}'. "
-                    f"Approximate stage uses quantized weights as its base."
-                )
             if tsne_multiplier_path is None:
                 raise ValueError(
                     "Approximate stage requires --tsne_multiplier_path <path/to/table.npy>."
@@ -414,6 +463,13 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
                     f"[WARN] Retrained approximate checkpoint not found for '{approx_tag}'. "
                     f"Falling back to quantized checkpoint: {quant_path}"
                 )
+                if not os.path.exists(quant_path):
+                    raise FileNotFoundError(
+                        f"No available checkpoints for approximate stage:\n"
+                        f"- retrained: '{approx_retrained_best_path}'\n"
+                        f"- quantized base: '{quant_path}'.\n"
+                        f"Train conv_type=2 first and (optionally) conv_type=3 retrained-best for this multiplier."
+                    )
                 model.load_state_dict(torch.load(quant_path, weights_only=True), strict=False)
             output_tag = f"approximate_{approx_tag}"
         else:
@@ -428,6 +484,9 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
             calibration(model)
 
         model.to(device)
+        if feature_space == "layer" and resolved_layer_path is None:
+            resolved_layer_path = resolve_tsne_layer_path(model, feature_layer)
+            print(f"Using layer alias/path '{feature_layer}' resolved to '{resolved_layer_path}'.")
         print(f"\n--- Running t-SNE for stage: {stage} ({feature_space}) ---")
         tsne_vis.run_tsne_cnn_experiment(
             model, train_loader, test_loader, device,
@@ -442,7 +501,7 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
             image_shape=image_shape,
             feature_space=feature_space,
             output_tag=output_tag,
-            feature_layer_path=feature_layer_path,
+            feature_layer_path=resolved_layer_path,
         )
 
 # ---------------------------------------------------------- #
@@ -473,7 +532,8 @@ if __name__ == "__main__":
                         help="Feature space for t-SNE: arbitrary layer hook or raw pixels.")
     parser.add_argument("--tsne_feature_layer", type=str, default="penultimate",
                         help=("Layer alias/path used when --tsne_feature_space layer. "
-                              "For lenet5 aliases: penultimate, logits, conv1, conv2, block1, block2"))
+                              "Aliases: penultimate, logits, conv1, conv2, block1, block2 "
+                              "(or an explicit module path like layer2.0)."))
     parser.add_argument("--tsne_stages", type=str, nargs="+", default=["exact"],
                         choices=["exact", "quantized", "approximate"],
                         help="Stages to visualise: exact, quantized, approximate.")

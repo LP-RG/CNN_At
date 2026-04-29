@@ -169,6 +169,7 @@ temp/
 trained_models/
 report/
 data/
+multipliers/
 # Ignore VS Code settings
 .vscode/
 
