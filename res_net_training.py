@@ -303,7 +303,9 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
                         feature_space: str = "layer",
                         feature_layer: str = "penultimate",
                         stages=None, tsne_multiplier_path: str = None,
-                        bit_width: int = 8):
+                        bit_width: int = 8,
+                        save_static: bool = True,
+                        save_dash_artifact: bool = True):
     """Load trained CNN checkpoints and visualise misclassifications with t-SNE.
 
     Parameters
@@ -350,6 +352,9 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
     stages = stages or ["exact"]
     image_shape = MODEL_IMAGE_SHAPES.get(model_name.lower())
     resolved_layer_path = None
+    # Keep one fixed train/test subset across all selected stages in this run.
+    # This makes exact/quantized/approximate embeddings directly comparable.
+    subsample_state = {}
 
     def resolve_tsne_layer_path(model: nn.Module, requested_layer: str) -> str:
         """
@@ -502,6 +507,10 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
             feature_space=feature_space,
             output_tag=output_tag,
             feature_layer_path=resolved_layer_path,
+            feature_layer_requested=feature_layer,
+            save_static=save_static,
+            save_dash_artifact=save_dash_artifact,
+            subsample_state=subsample_state,
         )
 
 # ---------------------------------------------------------- #
@@ -539,6 +548,11 @@ if __name__ == "__main__":
                         help="Stages to visualise: exact, quantized, approximate.")
     parser.add_argument("--tsne_multiplier_path", type=str, default=None,
                         help="Required for approximate stage: .npy multiplier table path.")
+    parser.add_argument("--tsne-no-save-static", action="store_false", dest="tsne_save_static",
+                        help="Do not save static t-SNE/misclassification PNG outputs.")
+    parser.add_argument("--tsne-no-save-dash-artifact", action="store_false", dest="tsne_save_dash_artifact",
+                        help="Do not save Dash .npz artifacts.")
+    parser.set_defaults(tsne_save_static=True, tsne_save_dash_artifact=True)
     # ---------------------------------------------------------- #
     args = parser.parse_args()
 
@@ -565,6 +579,8 @@ if __name__ == "__main__":
             stages=args.tsne_stages,
             tsne_multiplier_path=args.tsne_multiplier_path,
             bit_width=args.bit_width,
+            save_static=args.tsne_save_static,
+            save_dash_artifact=args.tsne_save_dash_artifact,
         )
         sys.exit(0)
 
