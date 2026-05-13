@@ -10,7 +10,7 @@ from modules.tsne_utils import (
     build_dash_artifact_path,
     build_layer_tag,
     build_tag,
-    save_dash_artifact,
+    save_dash_artifact as save_dash_artifact_fn,
 )
 
 
@@ -260,7 +260,21 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
                             save_static=True,
                             save_dash_artifact=True,
                             subsample_state=None):
-    """Run t-SNE with CNN misclassification overlay."""
+    """Run t-SNE with CNN misclassification overlay.
+
+    Subsamples train/test loaders, extracts features (layer activations or
+    raw pixels), fits 2-D t-SNE, and writes a static PNG and/or a Dash
+    .npz artifact.
+
+    Args:
+        feature_space: "layer" uses a forward hook; "pixels" uses raw inputs.
+        feature_layer_path: resolved named_modules() key (required for "layer").
+        subsample_state: pass a shared dict {} across multiple calls to reuse
+            the same train/test indices (keeps stages comparable).
+
+    Returns:
+        (X_2d, y_all, y_pred_sub, test_mask) as NumPy arrays.
+    """
     rng = np.random.default_rng(seed)
 
     if classes is not None:
@@ -377,7 +391,7 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
             output_tag=output_tag,
             classes=classes,
         )
-        save_dash_artifact(
+        save_dash_artifact_fn(
             artifact_path,
             X_2d=X_2d,
             y_all=y_all,

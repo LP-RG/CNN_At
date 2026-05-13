@@ -355,6 +355,12 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
     # Keep one fixed train/test subset across all selected stages in this run.
     # This makes exact/quantized/approximate embeddings directly comparable.
     subsample_state = {}
+    if len(stages) == 1:
+        print(
+            "[NOTE] Running a single t-SNE stage. Plot is valid for this run, "
+            "but cross-run comparisons require fixed seed/sampling/t-SNE params "
+            "(seed, max_train, max_test, perplexity, max_iter)."
+        )
 
     def resolve_tsne_layer_path(model: nn.Module, requested_layer: str) -> str:
         """

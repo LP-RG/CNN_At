@@ -5,6 +5,7 @@ import numpy as np
 
 
 def safe_layer_name(layer_path):
+    """Convert a layer path string into a safe filesystem string."""
     if not layer_path:
         return ""
     return (str(layer_path)
@@ -15,27 +16,32 @@ def safe_layer_name(layer_path):
 
 
 def build_layer_tag(feature_space, feature_layer_path):
+    """Construct the layer portion of an artifact filename."""
     if feature_space == "layer" and feature_layer_path:
         return f"_layer-{safe_layer_name(feature_layer_path)}"
     return ""
 
 
 def build_classes_tag(classes):
+    """Construct the classes portion of an artifact filename."""
     if classes is None:
         return ""
     return "_classes" + "-".join(str(c) for c in classes)
 
 
 def build_tag(output_tag):
+    """Construct the user-provided tag portion of an artifact filename."""
     return f"_{output_tag}" if output_tag else ""
 
 
 def build_dash_data_dir(save_dir, feature_space, model_name):
+    """Construct the directory path for storing Dash .npz artifacts."""
     return os.path.join(save_dir, feature_space, model_name, "dash_data")
 
 
 def build_dash_artifact_basename(model_name, feature_space, feature_layer_path,
                                  output_tag, classes):
+    """Construct the base filename (without extension) for a Dash artifact."""
     layer_tag = build_layer_tag(feature_space, feature_layer_path)
     tag = build_tag(output_tag)
     classes_tag = build_classes_tag(classes)
@@ -44,6 +50,12 @@ def build_dash_artifact_basename(model_name, feature_space, feature_layer_path,
 
 def build_dash_artifact_path(save_dir, feature_space, model_name, feature_layer_path,
                              output_tag, classes):
+    """Construct the full canonical .npz path for a given run configuration.
+    
+    The path follows the layout:
+        <save_dir>/<feature_space>/<model_name>/dash_data/<basename>.npz
+    where <basename> encodes layer, tag, and class filter for uniqueness.
+    """
     dash_out_dir = build_dash_data_dir(save_dir, feature_space, model_name)
     basename = build_dash_artifact_basename(
         model_name=model_name,
@@ -57,6 +69,7 @@ def build_dash_artifact_path(save_dir, feature_space, model_name, feature_layer_
 
 def build_dash_artifact_pattern(save_dir, feature_space, model_name, feature_layer_path,
                                 output_tag):
+    """Construct a glob pattern to find artifacts matching a run configuration."""
     dash_out_dir = build_dash_data_dir(save_dir, feature_space, model_name)
     layer_tag = build_layer_tag(feature_space, feature_layer_path)
     tag = build_tag(output_tag)
@@ -64,6 +77,7 @@ def build_dash_artifact_pattern(save_dir, feature_space, model_name, feature_lay
 
 
 def get_misclassified_indices(y_test_sub, y_pred_sub):
+    """Return indices of incorrect predictions within a test subset."""
     y_test_sub = np.asarray(y_test_sub)
     y_pred_sub = np.asarray(y_pred_sub)
     return np.where(y_test_sub != y_pred_sub)[0]
@@ -73,6 +87,7 @@ def save_dash_artifact(artifact_path, X_2d, y_all, test_mask, y_test_sub,
                        y_pred_sub, X_test_pixels, image_shape,
                        model_name, feature_space, feature_layer_path,
                        feature_layer_requested, output_tag, classes, title):
+    """Persist t-SNE plot data and metadata into a compressed .npz archive."""
     os.makedirs(os.path.dirname(artifact_path) or ".", exist_ok=True)
     np.savez_compressed(
         artifact_path,
@@ -96,6 +111,13 @@ def save_dash_artifact(artifact_path, X_2d, y_all, test_mask, y_test_sub,
 
 
 def load_dash_artifact(path):
+    """Load a .npz Dash artifact and return its contents as a Python dictionary.
+    
+    Keys: X_2d, y_all, test_mask, y_test_sub, y_pred_sub, X_test_pixels,
+          image_shape, model_name, feature_space, feature_layer_path,
+          feature_layer_requested, output_tag, title.
+    All numpy scalars are already cast to plain Python types.
+    """
     data = np.load(path, allow_pickle=False)
     return {
         "path": str(path),
@@ -116,6 +138,7 @@ def load_dash_artifact(path):
 
 
 def latest_artifact_after(save_dir, feature_space, model_name, start_ts):
+    """Find the most recently modified artifact created after a given timestamp."""
     dash_dir = Path(build_dash_data_dir(save_dir, feature_space, model_name))
     candidates = list(dash_dir.glob("*.npz"))
     candidates = [p for p in candidates if p.stat().st_mtime >= start_ts]
