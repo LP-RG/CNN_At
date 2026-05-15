@@ -302,7 +302,7 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
                         classes=None, seed=42, show_misclassifications: bool = False,
                         feature_space: str = "layer",
                         feature_layer: str = "penultimate",
-                        stages=None, tsne_multiplier_path: str = None,
+                        stages=None, tsne_multiplier_paths=None,
                         bit_width: int = 8,
                         save_static: bool = True,
                         save_dash_artifact: bool = True):
@@ -336,8 +336,8 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
         Which hardware stages to visualise. Allowed values are:
         "exact", "quantized", "approximate".
         None defaults to ["exact"].
-    tsne_multiplier_path : str or None
-        Path to the .npy multiplier lookup table.
+    tsne_multiplier_paths : list[str] or str or None
+        Path(s) to the .npy multiplier lookup table(s).
         Required when stages contains "approximate".
     bit_width : int
         Bit width used to resolve the quantized checkpoint filename
@@ -424,6 +424,16 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
         return requested_layer
 
     for stage in stages:
+        if stage == "approximate":
+            if not tsne_multiplier_paths:
+                raise ValueError("Approximate stage requires at least one --tsne_multiplier_path <path.npy>.")
+            paths = [tsne_multiplier_paths] if isinstance(tsne_multiplier_paths, str) else tsne_multiplier_paths
+            for path in paths:
+                expanded_stages.append((stage, path))
+        else:
+            expanded_stages.append((stage, None))
+
+    for stage, tsne_multiplier_path in expanded_stages:
         if stage == "exact":
             if not os.path.exists(exact_path):
                 raise FileNotFoundError(
@@ -447,10 +457,6 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
             model.load_state_dict(torch.load(quant_path, weights_only=True))
             output_tag = "quantized"
         elif stage == "approximate":
-            if tsne_multiplier_path is None:
-                raise ValueError(
-                    "Approximate stage requires --tsne_multiplier_path <path/to/table.npy>."
-                )
             if not os.path.exists(tsne_multiplier_path):
                 raise FileNotFoundError(
                     f"Approximate multiplier table not found: '{tsne_multiplier_path}'."
@@ -552,8 +558,8 @@ if __name__ == "__main__":
     parser.add_argument("--tsne_stages", type=str, nargs="+", default=["exact"],
                         choices=["exact", "quantized", "approximate"],
                         help="Stages to visualise: exact, quantized, approximate.")
-    parser.add_argument("--tsne_multiplier_path", type=str, default=None,
-                        help="Required for approximate stage: .npy multiplier table path.")
+    parser.add_argument("--tsne_multiplier_path", type=str, nargs="+", default=None,
+                        help="Required for approximate stage: one or more .npy multiplier table paths.")
     parser.add_argument("--tsne-no-save-static", action="store_false", dest="tsne_save_static",
                         help="Do not save static t-SNE/misclassification PNG outputs.")
     parser.add_argument("--tsne-no-save-dash-artifact", action="store_false", dest="tsne_save_dash_artifact",
@@ -583,7 +589,7 @@ if __name__ == "__main__":
             feature_space=args.tsne_feature_space,
             feature_layer=args.tsne_feature_layer,
             stages=args.tsne_stages,
-            tsne_multiplier_path=args.tsne_multiplier_path,
+            tsne_multiplier_paths=args.tsne_multiplier_path,
             bit_width=args.bit_width,
             save_static=args.tsne_save_static,
             save_dash_artifact=args.tsne_save_dash_artifact,
