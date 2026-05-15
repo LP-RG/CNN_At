@@ -34,8 +34,10 @@ def build_tag(output_tag):
     return f"_{output_tag}" if output_tag else ""
 
 
-def build_dash_data_dir(save_dir, feature_space, model_name):
+def build_dash_data_dir(save_dir, feature_space, model_name, run_id=None):
     """Construct the directory path for storing Dash .npz artifacts."""
+    if run_id:
+        return os.path.join(save_dir, feature_space, model_name, run_id, "dash_data")
     return os.path.join(save_dir, feature_space, model_name, "dash_data")
 
 
@@ -49,14 +51,14 @@ def build_dash_artifact_basename(model_name, feature_space, feature_layer_path,
 
 
 def build_dash_artifact_path(save_dir, feature_space, model_name, feature_layer_path,
-                             output_tag, classes):
+                             output_tag, classes, run_id=None):
     """Construct the full canonical .npz path for a given run configuration.
     
     The path follows the layout:
-        <save_dir>/<feature_space>/<model_name>/dash_data/<basename>.npz
+        <save_dir>/<feature_space>/<model_name>/[run_id]/dash_data/<basename>.npz
     where <basename> encodes layer, tag, and class filter for uniqueness.
     """
-    dash_out_dir = build_dash_data_dir(save_dir, feature_space, model_name)
+    dash_out_dir = build_dash_data_dir(save_dir, feature_space, model_name, run_id)
     basename = build_dash_artifact_basename(
         model_name=model_name,
         feature_space=feature_space,
@@ -68,9 +70,9 @@ def build_dash_artifact_path(save_dir, feature_space, model_name, feature_layer_
 
 
 def build_dash_artifact_pattern(save_dir, feature_space, model_name, feature_layer_path,
-                                output_tag):
+                                output_tag, run_id=None):
     """Construct a glob pattern to find artifacts matching a run configuration."""
-    dash_out_dir = build_dash_data_dir(save_dir, feature_space, model_name)
+    dash_out_dir = build_dash_data_dir(save_dir, feature_space, model_name, run_id)
     layer_tag = build_layer_tag(feature_space, feature_layer_path)
     tag = build_tag(output_tag)
     return os.path.join(dash_out_dir, f"tsne_{model_name}{layer_tag}{tag}*.npz")
@@ -139,8 +141,8 @@ def load_dash_artifact(path):
 
 def latest_artifact_after(save_dir, feature_space, model_name, start_ts):
     """Find the most recently modified artifact created after a given timestamp."""
-    dash_dir = Path(build_dash_data_dir(save_dir, feature_space, model_name))
-    candidates = list(dash_dir.glob("*.npz"))
+    base_dir = Path(save_dir) / feature_space / model_name
+    candidates = list(base_dir.rglob("dash_data/*.npz"))
     candidates = [p for p in candidates if p.stat().st_mtime >= start_ts]
     if not candidates:
         return None

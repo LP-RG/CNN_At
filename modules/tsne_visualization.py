@@ -259,7 +259,8 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
                             feature_layer_requested=None,
                             save_static=True,
                             save_dash_artifact=True,
-                            subsample_state=None):
+                            subsample_state=None,
+                            run_id=None):
     """Run t-SNE with CNN misclassification overlay.
 
     Subsamples train/test loaders, extracts features (layer activations or
@@ -355,8 +356,12 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
           f"misclassified: {wrong_count}/{n_test}")
 
     classes_tag = build_classes_tag(classes)
-    tsne_out_dir = os.path.join(save_dir, feature_space, model_name, "tsne")
-    mis_out_dir = os.path.join(save_dir, feature_space, model_name, "misclassified")
+    if run_id:
+        tsne_out_dir = os.path.join(save_dir, feature_space, model_name, run_id, "tsne")
+        mis_out_dir = os.path.join(save_dir, feature_space, model_name, run_id, "misclassified")
+    else:
+        tsne_out_dir = os.path.join(save_dir, feature_space, model_name, "tsne")
+        mis_out_dir = os.path.join(save_dir, feature_space, model_name, "misclassified")
     tag = build_tag(output_tag)
     layer_tag = build_layer_tag(feature_space, feature_layer_path)
 
@@ -390,6 +395,7 @@ def run_tsne_cnn_experiment(model, train_loader, test_loader, device,
             feature_layer_path=feature_layer_path,
             output_tag=output_tag,
             classes=classes,
+            run_id=run_id,
         )
         save_dash_artifact_fn(
             artifact_path,

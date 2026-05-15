@@ -423,6 +423,33 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
         # Unknown alias: treat as an explicit module path.
         return requested_layer
 
+    import datetime
+    import json
+    save_dir = "./plots"
+    run_id = f"run_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    run_dir = os.path.join(save_dir, feature_space, model_name, run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    
+    metadata = {
+        "model_name": model_name,
+        "feature_space": feature_space,
+        "feature_layer": feature_layer,
+        "stages": stages,
+        "tsne_multiplier_paths": tsne_multiplier_paths,
+        "bit_width": bit_width,
+        "perplexity": perplexity,
+        "max_iter": max_iter,
+        "max_train": max_train,
+        "max_test": max_test,
+        "classes": classes,
+        "seed": seed,
+        "run_id": run_id,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+    with open(os.path.join(run_dir, "metadata.json"), "w") as f:
+        json.dump(metadata, f, indent=2)
+
+    expanded_stages = []
     for stage in stages:
         if stage == "approximate":
             if not tsne_multiplier_paths:
@@ -523,6 +550,7 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
             save_static=save_static,
             save_dash_artifact=save_dash_artifact,
             subsample_state=subsample_state,
+            run_id=run_id,
         )
 
 # ---------------------------------------------------------- #
