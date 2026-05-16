@@ -33,9 +33,9 @@ This runs t-SNE on the **exact** (float) checkpoint with all defaults (see table
 | `--tsne_seed` | int | `42` | RNG seed for subsampling and t-SNE init. |
 | `--tsne_classes` | int… | `None` (all) | Restrict to a subset of classes, e.g. `--tsne_classes 0 1 2`. |
 | `--tsne_feature_space` | `layer`/`pixels` | `layer` | Feature type to embed (see §2). |
-| `--tsne_feature_layer` | str | `penultimate` | Layer alias or explicit module path (see §2). |
+| `--tsne_feature_layer` | str… | `penultimate` | Layer alias(es) or explicit module path(s) (see §2). You can specify multiple layers to process them all simultaneously. |
 | `--tsne_stages` | str… | `exact` | Which checkpoints to visualise: `exact`, `quantized`, `approximate`. |
-| `--tsne_multiplier_path` | str | `None` | Path to `.npy` lookup table; **required** for `approximate` stage. |
+| `--tsne_multiplier_path` | str… | `None` | Path(s) to `.npy` lookup table(s); **required** for `approximate` stage. Accepts multiple paths to run several approximate models simultaneously. |
 | `--bit_width` | int | `8` | Bit width for quantized/approximate checkpoint filenames. |
 | `--show_misclassifications` | flag | `False` | Also save a grid of misclassified test images as a PNG. |
 | `--tsne-no-save-static` | flag | — | Suppress static PNG output. |
@@ -48,7 +48,7 @@ python res_net_training.py \
     --model_name resnet \
     --tsne \
     --tsne_stages exact quantized approximate \
-    --tsne_multiplier_path multipliers/my_table.npy \
+    --tsne_multiplier_path multipliers/my_table.npy multipliers/my_other_table.npy \
     --tsne_feature_layer penultimate \
     --tsne_max_train 3000 --tsne_max_test 1500 \
     --tsne_seed 7
@@ -70,6 +70,8 @@ The `--tsne_feature_space` parameter controls what gets embedded:
 
 ### Layer aliases (for `--tsne_feature_layer`)
 
+You can pass one or more of these aliases separated by spaces. All requested layers will be processed and saved into the same run directory.
+
 | Alias | Resolves to |
 |---|---|
 | `penultimate` | Second-to-last `nn.Linear`; or last `AdaptiveAvgPool2d` for ResNet-style models. |
@@ -87,18 +89,20 @@ The `--tsne_feature_space` parameter controls what gets embedded:
 
 ## 3 — Output Files
 
-All outputs are written under `./plots` (configurable via `save_dir` in the Python API).
+All outputs are written under `./plots` (configurable via `save_dir` in the Python API). Each run is logically grouped into a timestamped directory containing a `metadata.json` file.
 
 ```
 plots/
 └── <feature_space>/          # "layer" or "pixels"
     └── <model_name>/
-        ├── tsne/
-        │   └── tsne_<model>[_layer-<layer>][_<tag>][_classes<ids>].png
-        ├── misclassified/
-        │   └── misclassified_<model>[…].png
-        └── dash_data/
-            └── tsne_<model>[_layer-<layer>][_<tag>][_classes<ids>].npz
+        └── run_YYYYMMDD_HHMMSS/
+            ├── metadata.json
+            ├── tsne/
+            │   └── tsne_<model>[_layer-<layer>][_<tag>][_classes<ids>].png
+            ├── misclassified/
+            │   └── misclassified_<model>[…].png
+            └── dash_data/
+                └── tsne_<model>[_layer-<layer>][_<tag>][_classes<ids>].npz
 ```
 
 ### Static PNG (`tsne/`)
@@ -117,6 +121,9 @@ image with `true=` / `pred=` labels in red.
 A compressed NumPy archive consumed by the interactive app (see [Dash App](dash_app.md)).
 Contains all arrays needed to reconstruct the plot and preview misclassified
 images without re-running t-SNE.
+
+### Run Metadata (`metadata.json`)
+Automatically generated on every run. Logs hyper-parameters (seed, max_train, etc.) ensuring that artifacts in the same `run_` directory are completely comparable.
 
 ---
 
@@ -142,7 +149,17 @@ python res_net_training.py \
     --tsne_feature_layer penultimate
 ```
 
-### C — Approximate hardware, specific classes, with image grid
+### C — Multi-layer comparison
+
+```bash
+python res_net_training.py \
+    --model_name lenet5 \
+    --tsne \
+    --tsne_stages exact \
+    --tsne_feature_layer conv1 penultimate
+```
+
+### D — Approximate hardware, specific classes, with image grid
 
 ```bash
 python res_net_training.py \
@@ -155,9 +172,9 @@ python res_net_training.py \
     --tsne_feature_layer conv2
 ```
 
-### D — View an existing artifact in the Dash app
+### E — View an existing run in the Dash app
 
 ```bash
-python apps/tsne_dash_app.py
-# In the browser: paste e.g. plots/layer/resnet/dash_data/tsne_resnet_*.npz
+python3 apps/tsne_dash_app.py
+# In the browser: paste a run directory path, e.g. plots/layer/resnet/run_20260515_181919
 ```

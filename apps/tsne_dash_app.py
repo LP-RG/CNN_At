@@ -177,199 +177,245 @@ def _load_artifact(artifact_path):
     return fig, payload
 
 
+def _load_run_dir(run_dir):
+    """Scan a run directory for metadata and artifacts."""
+    run_path = Path(run_dir).resolve()
+    if not run_path.exists():
+        raise ValueError(f"Path does not exist: {run_path}")
+        
+    if run_path.is_file() and run_path.suffix == ".npz":
+        return {run_path.name: str(run_path)}, {}
+        
+    metadata = {}
+    meta_path = run_path / "metadata.json"
+    if meta_path.exists():
+        import json
+        with open(meta_path, "r") as f:
+            metadata = json.load(f)
+            
+    artifacts = {}
+    for npz_path in run_path.rglob("dash_data/*.npz"):
+        artifacts[npz_path.stem] = str(npz_path)
+        
+    if not artifacts:
+        raise ValueError("No .npz artifacts found in the specified directory.")
+        
+    return artifacts, metadata
+
 def create_app():
     app = Dash(__name__)
-    initial_msg = "Load an artifact, then click a red cross."
+    initial_msg = "Load a run, then click a red cross."
     app.layout = html.Div(
         style={
-            "display": "grid",
-            "gridTemplateColumns": "340px minmax(700px, 1fr)",
-            "gap": "12px",
-            "padding": "10px",
-            "height": "100vh",
-            "boxSizing": "border-box",
-            "overflow": "hidden",
+            "display": "flex", "flexDirection": "column", "gap": "16px",
+            "padding": "16px", "minHeight": "100vh", "boxSizing": "border-box",
+            "backgroundColor": "#f4f4f9", "fontFamily": "sans-serif"
         },
         children=[
+            # TOP ROW
             html.Div(
                 style={
-                    "display": "flex",
-                    "flexDirection": "column",
-                    "gap": "8px",
-                    "overflowY": "auto",
-                    "paddingRight": "6px",
+                    "display": "flex", "flexDirection": "row", "gap": "12px",
+                    "alignItems": "center", "backgroundColor": "white",
+                    "padding": "16px", "borderRadius": "8px", "boxShadow": "0 2px 4px rgba(0,0,0,0.1)"
                 },
                 children=[
-                    html.H3("t-SNE Dashboard", style={"margin": "0 0 8px 0"}),
-                    html.Label("Artifact path"),
-                    dcc.Input(id="artifact-path", type="text", style={"width": "100%"},
-                              placeholder="plots/layer/lenet5/dash_data/....npz"),
-                    html.Button("Load Artifact", id="load-artifact", n_clicks=0),
-                    html.Button("Clear / Reset View", id="clear-reset", n_clicks=0),
-                    dcc.Loading(
-                        type="dot",
-                        children=[
-                            html.Pre(
-                                id="status-log",
-                                children="Idle. Load an artifact to start.",
-                                style={
-                                    "whiteSpace": "pre-wrap",
-                                    "overflowWrap": "anywhere",
-                                    "wordBreak": "break-word",
-                                    "fontSize": "11px",
-                                    "maxHeight": "180px",
-                                    "overflowY": "auto",
-                                },
-                            ),
-                        ],
-                    ),
-                ],
+                    html.H3("t-SNE Compare", style={"margin": "0", "minWidth": "160px"}),
+                    dcc.Input(id="run-path", type="text", style={"flex": 1, "padding": "8px"},
+                              placeholder="Path to run directory (e.g. plots/pixels/resnet/run_2026...)"),
+                    html.Button("Load Run", id="load-run", n_clicks=0, style={"padding": "8px 16px"}),
+                    html.Button("Clear", id="clear-reset", n_clicks=0, style={"padding": "8px 16px"}),
+                    html.Div(id="status-log", style={"marginLeft": "16px", "fontSize": "12px", "color": "#666", "flex": 1, "whiteSpace": "nowrap", "overflow": "hidden", "textOverflow": "ellipsis"})
+                ]
             ),
+            # METADATA ROW
+            html.Div(
+                id="metadata-container",
+                style={"display": "none"},
+                children=[
+                    html.H4("Run Metadata", style={"margin": "0 0 8px 0"}),
+                    html.Pre(id="run-metadata-display", style={"margin": "0", "fontSize": "13px", "whiteSpace": "pre-wrap", "color": "#333"})
+                ]
+            ),
+            # MIDDLE ROW
+            html.Div(
+                style={"display": "flex", "flexDirection": "row", "gap": "16px", "flex": 1, "minHeight": "600px"},
+                children=[
+                    html.Div(
+                        style={"flex": 1, "display": "flex", "flexDirection": "column", "gap": "8px", "backgroundColor": "white", "padding": "12px", "borderRadius": "8px", "boxShadow": "0 2px 4px rgba(0,0,0,0.1)", "minWidth": 0},
+                        children=[
+                            html.Div(
+                                style={"display": "flex", "flexDirection": "row", "alignItems": "center", "gap": "8px"},
+                                children=[
+                                    html.Label("Left View:", style={"fontWeight": "bold"}),
+                                    dcc.Dropdown(id="left-dropdown", style={"flex": 1}, clearable=False),
+                                ]
+                            ),
+                            dcc.Loading(dcc.Graph(id="left-graph", figure=_blank_figure(), style={"flex": 1}, config={"displaylogo": False}))
+                        ]
+                    ),
+                    html.Div(
+                        style={"flex": 1, "display": "flex", "flexDirection": "column", "gap": "8px", "backgroundColor": "white", "padding": "12px", "borderRadius": "8px", "boxShadow": "0 2px 4px rgba(0,0,0,0.1)", "minWidth": 0},
+                        children=[
+                            html.Div(
+                                style={"display": "flex", "flexDirection": "row", "alignItems": "center", "gap": "8px"},
+                                children=[
+                                    html.Label("Right View:", style={"fontWeight": "bold"}),
+                                    dcc.Dropdown(id="right-dropdown", style={"flex": 1}, clearable=True, placeholder="Select an artifact to compare..."),
+                                ]
+                            ),
+                            dcc.Loading(dcc.Graph(id="right-graph", figure=_blank_figure("Select a second artifact to compare."), style={"flex": 1}, config={"displaylogo": False}))
+                        ]
+                    ),
+                ]
+            ),
+            # BOTTOM ROW
             html.Div(
                 style={
-                    "display": "grid",
-                    "gridTemplateColumns": "minmax(520px, 1fr) 320px",
-                    "gap": "12px",
-                    "height": "100%",
-                    "minWidth": 0,
+                    "display": "flex", "flexDirection": "row", "gap": "16px", "backgroundColor": "white",
+                    "padding": "16px", "borderRadius": "8px", "boxShadow": "0 2px 4px rgba(0,0,0,0.1)",
+                    "alignItems": "center", "minHeight": "140px"
                 },
                 children=[
-                    html.Div(
-                        style={"display": "flex", "flexDirection": "column", "minWidth": 0},
-                        children=[
-                            dcc.Loading(
-                                type="default",
-                                children=[
-                                    dcc.Graph(
-                                        id="tsne-graph",
-                                        figure=_blank_figure(),
-                                        style={"height": "calc(100vh - 44px)"},
-                                        config={"displaylogo": False},
-                                    ),
-                                ],
-                            ),
-                        ],
-                    ),
-                    html.Div(
-                        style={
-                            "display": "flex",
-                            "flexDirection": "column",
-                            "gap": "8px",
-                            "height": "calc(100vh - 44px)",
-                            "overflowY": "auto",
-                            "padding": "8px",
-                            "border": "1px solid #ddd",
-                            "borderRadius": "6px",
-                            "backgroundColor": "#fafafa",
-                        },
-                        children=[
-                            dcc.Loading(
-                                type="circle",
-                                children=[
-                                    html.H4("Misclassified Preview", style={"margin": "0"}),
-                                    html.Div(id="preview-message", children=initial_msg),
-                                    html.Img(
-                                        id="preview-image",
-                                        style={
-                                            "width": "100%",
-                                            "maxHeight": "320px",
-                                            "objectFit": "contain",
-                                            "border": "1px solid #ddd",
-                                            "backgroundColor": "white",
-                                        },
-                                    ),
-                                    html.Pre(
-                                        id="preview-meta",
-                                        style={
-                                            "whiteSpace": "pre-wrap",
-                                            "margin": "0",
-                                            "fontSize": "12px",
-                                            "overflowX": "auto",
-                                        },
-                                    ),
-                                ],
-                            ),
-                        ],
-                    ),
-                    dcc.Store(id="artifact-state"),
-                ],
+                    html.Div(style={"width": "200px"}, children=[
+                        html.H4("Misclassified Preview", style={"margin": "0 0 8px 0"}),
+                        html.Div(id="preview-message", children=initial_msg, style={"fontSize": "13px"}),
+                    ]),
+                    html.Img(id="preview-image", style={"height": "120px", "objectFit": "contain", "border": "1px solid #ddd", "backgroundColor": "#fafafa", "display": "none"}),
+                    html.Pre(id="preview-meta", style={"whiteSpace": "pre-wrap", "margin": "0", "fontSize": "13px", "flex": 1}),
+                ]
             ),
-        ],
+            dcc.Store(id="run-artifacts"),
+            dcc.Store(id="left-state"),
+            dcc.Store(id="right-state"),
+        ]
     )
 
-    # load artifact or reset view
     @app.callback(
-        Output("tsne-graph", "figure"),
-        Output("artifact-state", "data"),
+        Output("run-artifacts", "data"),
+        Output("left-dropdown", "options"),
+        Output("right-dropdown", "options"),
+        Output("left-dropdown", "value"),
+        Output("right-dropdown", "value"),
         Output("status-log", "children"),
-        Output("artifact-path", "value"),
-        Input("load-artifact", "n_clicks"),
+        Output("metadata-container", "style"),
+        Output("run-metadata-display", "children"),
+        Input("load-run", "n_clicks"),
         Input("clear-reset", "n_clicks"),
-        State("artifact-path", "value"),
+        State("run-path", "value"),
         prevent_initial_call=True,
     )
-    def _load_or_reset(load_clicks, clear_clicks, artifact_path):
+    def _load_run_directory(load_clicks, clear_clicks, run_path):
         trigger = callback_context.triggered_id
+        meta_style_hidden = {"display": "none"}
+        meta_style_visible = {"display": "block", "backgroundColor": "white", "padding": "16px", "borderRadius": "8px", "boxShadow": "0 2px 4px rgba(0,0,0,0.1)"}
+        
+        if trigger == "clear-reset":
+            return None, [], [], None, None, "Cleared.", meta_style_hidden, ""
+            
+        if not run_path:
+            return None, [], [], None, None, "Please provide a run directory path.", meta_style_hidden, ""
+            
         try:
-            if trigger == "clear-reset":
-                return _blank_figure(), None, "Idle. Load an artifact to start.", ""
-            if trigger == "load-artifact":
-                if not artifact_path:
-                    raise ValueError("Please provide an artifact path to load.")
-                full_path = str((ROOT / artifact_path).resolve()) if not os.path.isabs(artifact_path) else artifact_path
-                fig, payload = _load_artifact(full_path)
-                return fig, payload, f"Loaded artifact:\n{full_path}", artifact_path
-        except Exception as exc:
-            return {}, None, f"Error:\n{exc}", artifact_path or ""
-        raise PreventUpdate
+            full_path = str((ROOT / run_path).resolve()) if not os.path.isabs(run_path) else run_path
+            artifacts, metadata = _load_run_dir(full_path)
+            
+            options = [{"label": k, "value": v} for k, v in artifacts.items()]
+            keys = sorted(artifacts.keys())
+            left_val = artifacts[keys[0]]
+            right_val = artifacts[keys[1]] if len(keys) > 1 else None
+            
+            status = f"Loaded {len(artifacts)} artifacts from {Path(full_path).name}"
+            
+            import json
+            meta_str = json.dumps(metadata, indent=2) if metadata else "No metadata found."
+            return artifacts, options, options, left_val, right_val, status, meta_style_visible, meta_str
+        except Exception as e:
+            return None, [], [], None, None, f"Error: {e}", meta_style_hidden, ""
 
-    # click-to-preview misclassification
+    @app.callback(
+        Output("left-graph", "figure"),
+        Output("left-state", "data"),
+        Input("left-dropdown", "value"),
+        Input("clear-reset", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _update_left_graph(artifact_path, clear_clicks):
+        if callback_context.triggered_id == "clear-reset" or not artifact_path:
+            return _blank_figure(), None
+        try:
+            return _load_artifact(artifact_path)
+        except Exception as e:
+            return _blank_figure(f"Error loading artifact: {e}"), None
+
+    @app.callback(
+        Output("right-graph", "figure"),
+        Output("right-state", "data"),
+        Input("right-dropdown", "value"),
+        Input("clear-reset", "n_clicks"),
+        prevent_initial_call=True,
+    )
+    def _update_right_graph(artifact_path, clear_clicks):
+        if callback_context.triggered_id == "clear-reset" or not artifact_path:
+            return _blank_figure("Select a second artifact to compare."), None
+        try:
+            return _load_artifact(artifact_path)
+        except Exception as e:
+            return _blank_figure(f"Error loading artifact: {e}"), None
+
     @app.callback(
         Output("preview-message", "children"),
         Output("preview-image", "src"),
+        Output("preview-image", "style"),
         Output("preview-meta", "children"),
+        Input("left-graph", "clickData"),
+        Input("right-graph", "clickData"),
         Input("clear-reset", "n_clicks"),
-        Input("tsne-graph", "clickData"),
-        State("artifact-state", "data"),
+        State("left-state", "data"),
+        State("right-state", "data"),
+        prevent_initial_call=True,
     )
-    def _update_preview(clear_clicks, click_data, state):
-        if callback_context.triggered_id == "clear-reset":
-            return initial_msg, "", ""
-        if not state:
-            return "Load an artifact first.", "", ""
-        if not click_data:
-            return "Click a red misclassified cross to preview image.", "", ""
-
-        mis_trace_idx = state["mis_trace_idx"]
+    def _update_preview(left_click, right_click, clear_clicks, left_state, right_state):
+        trigger = callback_context.triggered_id
+        img_style_hidden = {"display": "none"}
+        img_style_visible = {"height": "120px", "objectFit": "contain", "border": "1px solid #ddd", "backgroundColor": "white", "display": "block"}
+        
+        if trigger == "clear-reset":
+            return initial_msg, "", img_style_hidden, ""
+            
+        click_data = left_click if trigger == "left-graph" else right_click
+        state = left_state if trigger == "left-graph" else right_state
+        
+        if not state or not click_data:
+            raise PreventUpdate
+            
+        mis_trace_idx = state.get("mis_trace_idx")
         if mis_trace_idx is None:
-            return "No misclassified points in this artifact.", "", ""
-
+            return "No misclassified points in this artifact.", "", img_style_hidden, ""
+            
         point = click_data["points"][0]
-        curve = int(point.get("curveNumber", -1))
-        if curve != mis_trace_idx:
-            return "Only red misclassified crosses are interactive.", "", ""
-
+        if int(point.get("curveNumber", -1)) != mis_trace_idx:
+            return "Only red misclassified crosses are interactive.", "", img_style_hidden, ""
+            
         pi = int(point.get("pointIndex", -1))
         artifact = load_dash_artifact(state["path"])
-        wrong_test_indices = get_misclassified_indices(
-            artifact["y_test_sub"], artifact["y_pred_sub"]
-        )
+        wrong_test_indices = get_misclassified_indices(artifact["y_test_sub"], artifact["y_pred_sub"])
+        
         if pi < 0 or pi >= len(wrong_test_indices):
-            return "Could not resolve clicked point.", "", ""
-
+            return "Could not resolve clicked point.", "", img_style_hidden, ""
+            
         test_idx = int(wrong_test_indices[pi])
         image_shape = artifact["image_shape"]
         X_test_pixels = artifact["X_test_pixels"]
-        y_test_sub = artifact["y_test_sub"]
-        y_pred_sub = artifact["y_pred_sub"]
         img_src = _image_to_data_url(X_test_pixels[test_idx], image_shape)
+        
         meta = (
-            f"artifact={state['path']}\n"
-            f"test_idx={test_idx}\n"
-            f"true={int(y_test_sub[test_idx])}\n"
-            f"pred={int(y_pred_sub[test_idx])}"
+            f"Artifact: {Path(state['path']).name}\n"
+            f"Test Index: {test_idx}\n"
+            f"True Label: {int(artifact['y_test_sub'][test_idx])}\n"
+            f"Predicted Label: {int(artifact['y_pred_sub'][test_idx])}"
         )
-        return "Selected misclassified sample:", img_src, meta
+        return "Selected misclassified sample:", img_src, img_style_visible, meta
 
     return app
 
