@@ -301,7 +301,7 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
                         max_train: int = 2000, max_test: int = 1000,
                         classes=None, seed=42, show_misclassifications: bool = False,
                         feature_space: str = "layer",
-                        feature_layer: str = "penultimate",
+                        feature_layers=None,
                         stages=None, tsne_multiplier_paths=None,
                         bit_width: int = 8,
                         save_static: bool = True,
@@ -328,10 +328,10 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
         Vector space used as t-SNE input:
         - "layer" uses activations from a hooked module path/alias
         - "pixels" uses flattened raw input pixels
-    feature_layer : str
-        Layer alias/path used when `feature_space="layer"`.
+    feature_layers : list[str]
+        List of layer alias/paths used when `feature_space="layer"`.
         Supported aliases include: penultimate, logits, conv1, conv2, block1, block2.
-        You can also pass an explicit `named_modules()` path (e.g. `layer2.0`).
+        You can also pass explicit `named_modules()` paths (e.g. `layer2.0`).
     stages : list[str] or None
         Which hardware stages to visualise. Allowed values are:
         "exact", "quantized", "approximate".
@@ -430,10 +430,13 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
     run_dir = os.path.join(save_dir, feature_space, model_name, run_id)
     os.makedirs(run_dir, exist_ok=True)
     
+    if feature_layers is None:
+        feature_layers = ["penultimate"]
+        
     metadata = {
         "model_name": model_name,
         "feature_space": feature_space,
-        "feature_layer": feature_layer,
+        "feature_layers": feature_layers,
         "stages": stages,
         "tsne_multiplier_paths": tsne_multiplier_paths,
         "bit_width": bit_width,
@@ -460,98 +463,100 @@ def run_tsne_experiment(model_name: str, perplexity: int = 30,
         else:
             expanded_stages.append((stage, None))
 
-    for stage, tsne_multiplier_path in expanded_stages:
-        if stage == "exact":
-            if not os.path.exists(exact_path):
-                raise FileNotFoundError(
-                    f"No exact checkpoint at '{exact_path}'. "
-                    f"Train first with --model_name {model_name} --conv_type 1."
-                )
-            model = build_model(model_name, conv_type=1, bit_width=bit_width,
-                                signed=False, zone=False, multiplier_matrix=None,
-                                num_classes=num_classes)
-            model.load_state_dict(torch.load(exact_path, weights_only=True))
-            output_tag = "exact"
-        elif stage == "quantized":
-            if not os.path.exists(quant_path):
-                raise FileNotFoundError(
-                    f"No quantized checkpoint at '{quant_path}'. "
-                    f"Train first with --model_name {model_name} --conv_type 2."
-                )
-            model = build_model(model_name, conv_type=2, bit_width=bit_width,
-                                signed=False, zone=False, multiplier_matrix=None,
-                                num_classes=num_classes)
-            model.load_state_dict(torch.load(quant_path, weights_only=True))
-            output_tag = "quantized"
-        elif stage == "approximate":
-            if not os.path.exists(tsne_multiplier_path):
-                raise FileNotFoundError(
-                    f"Approximate multiplier table not found: '{tsne_multiplier_path}'."
-                )
-            model = build_model(model_name, conv_type=3, bit_width=bit_width,
-                                signed=False, zone=False,
-                                multiplier_matrix=tsne_multiplier_path,
-                                num_classes=num_classes)
-            approx_tag = os.path.splitext(os.path.basename(tsne_multiplier_path))[0]
-            approx_retrained_best_path = os.path.join(
-                trained_models_path, f"{model_name}_a{bit_width}_{approx_tag}_retrained_best.pth"
-            )
-            if os.path.exists(approx_retrained_best_path):
-                print(f"Loading retrained approximate checkpoint: {approx_retrained_best_path}")
-                model.load_state_dict(
-                    torch.load(approx_retrained_best_path, weights_only=True),
-                    strict=False
-                )
-            else:
-                print(
-                    f"[WARN] Retrained approximate checkpoint not found for '{approx_tag}'. "
-                    f"Falling back to quantized checkpoint: {quant_path}"
-                )
+    for feature_layer in feature_layers:
+        resolved_layer_path = None
+        for stage, tsne_multiplier_path in expanded_stages:
+            if stage == "exact":
+                if not os.path.exists(exact_path):
+                    raise FileNotFoundError(
+                        f"No exact checkpoint at '{exact_path}'. "
+                        f"Train first with --model_name {model_name} --conv_type 1."
+                    )
+                model = build_model(model_name, conv_type=1, bit_width=bit_width,
+                                    signed=False, zone=False, multiplier_matrix=None,
+                                    num_classes=num_classes)
+                model.load_state_dict(torch.load(exact_path, weights_only=True))
+                output_tag = "exact"
+            elif stage == "quantized":
                 if not os.path.exists(quant_path):
                     raise FileNotFoundError(
-                        f"No available checkpoints for approximate stage:\n"
-                        f"- retrained: '{approx_retrained_best_path}'\n"
-                        f"- quantized base: '{quant_path}'.\n"
-                        f"Train conv_type=2 first and (optionally) conv_type=3 retrained-best for this multiplier."
+                        f"No quantized checkpoint at '{quant_path}'. "
+                        f"Train first with --model_name {model_name} --conv_type 2."
                     )
-                model.load_state_dict(torch.load(quant_path, weights_only=True), strict=False)
-            output_tag = f"approximate_{approx_tag}"
-        else:
-            raise ValueError(
-                f"Unknown stage '{stage}'. Use one of: exact, quantized, approximate."
+                model = build_model(model_name, conv_type=2, bit_width=bit_width,
+                                    signed=False, zone=False, multiplier_matrix=None,
+                                    num_classes=num_classes)
+                model.load_state_dict(torch.load(quant_path, weights_only=True))
+                output_tag = "quantized"
+            elif stage == "approximate":
+                if not os.path.exists(tsne_multiplier_path):
+                    raise FileNotFoundError(
+                        f"Approximate multiplier table not found: '{tsne_multiplier_path}'."
+                    )
+                model = build_model(model_name, conv_type=3, bit_width=bit_width,
+                                    signed=False, zone=False,
+                                    multiplier_matrix=tsne_multiplier_path,
+                                    num_classes=num_classes)
+                approx_tag = os.path.splitext(os.path.basename(tsne_multiplier_path))[0]
+                approx_retrained_best_path = os.path.join(
+                    trained_models_path, f"{model_name}_a{bit_width}_{approx_tag}_retrained_best.pth"
+                )
+                if os.path.exists(approx_retrained_best_path):
+                    print(f"Loading retrained approximate checkpoint: {approx_retrained_best_path}")
+                    model.load_state_dict(
+                        torch.load(approx_retrained_best_path, weights_only=True),
+                        strict=False
+                    )
+                else:
+                    print(
+                        f"[WARN] Retrained approximate checkpoint not found for '{approx_tag}'. "
+                        f"Falling back to quantized checkpoint: {quant_path}"
+                    )
+                    if not os.path.exists(quant_path):
+                        raise FileNotFoundError(
+                            f"No available checkpoints for approximate stage:\n"
+                            f"- retrained: '{approx_retrained_best_path}'\n"
+                            f"- quantized base: '{quant_path}'.\n"
+                            f"Train conv_type=2 first and (optionally) conv_type=3 retrained-best for this multiplier."
+                        )
+                    model.load_state_dict(torch.load(quant_path, weights_only=True), strict=False)
+                output_tag = f"approximate_{approx_tag}"
+            else:
+                raise ValueError(
+                    f"Unknown stage '{stage}'. Use one of: exact, quantized, approximate."
+                )
+    
+            # Quantized/approximate conv paths require observer-derived quantization
+            # parameters (activation_scale, zero-points, etc.). Ensure they exist
+            # before inference-time feature extraction for t-SNE.
+            if stage in ("quantized", "approximate"):
+                calibration(model)
+    
+            model.to(device)
+            if feature_space == "layer" and resolved_layer_path is None:
+                resolved_layer_path = resolve_tsne_layer_path(model, feature_layer)
+                print(f"Using layer alias/path '{feature_layer}' resolved to '{resolved_layer_path}'.")
+            print(f"\n--- Running t-SNE for stage: {stage} ({feature_space}, layer: {feature_layer}) ---")
+            tsne_vis.run_tsne_cnn_experiment(
+                model, train_loader, test_loader, device,
+                model_name=model_name,
+                perplexity=perplexity,
+                max_iter=max_iter,
+                max_train=max_train,
+                max_test=max_test,
+                classes=classes,
+                seed=seed,
+                show_misclassifications=show_misclassifications,
+                image_shape=image_shape,
+                feature_space=feature_space,
+                output_tag=output_tag,
+                feature_layer_path=resolved_layer_path,
+                feature_layer_requested=feature_layer,
+                save_static=save_static,
+                save_dash_artifact=save_dash_artifact,
+                subsample_state=subsample_state,
+                run_id=run_id,
             )
-
-        # Quantized/approximate conv paths require observer-derived quantization
-        # parameters (activation_scale, zero-points, etc.). Ensure they exist
-        # before inference-time feature extraction for t-SNE.
-        if stage in ("quantized", "approximate"):
-            calibration(model)
-
-        model.to(device)
-        if feature_space == "layer" and resolved_layer_path is None:
-            resolved_layer_path = resolve_tsne_layer_path(model, feature_layer)
-            print(f"Using layer alias/path '{feature_layer}' resolved to '{resolved_layer_path}'.")
-        print(f"\n--- Running t-SNE for stage: {stage} ({feature_space}) ---")
-        tsne_vis.run_tsne_cnn_experiment(
-            model, train_loader, test_loader, device,
-            model_name=model_name,
-            perplexity=perplexity,
-            max_iter=max_iter,
-            max_train=max_train,
-            max_test=max_test,
-            classes=classes,
-            seed=seed,
-            show_misclassifications=show_misclassifications,
-            image_shape=image_shape,
-            feature_space=feature_space,
-            output_tag=output_tag,
-            feature_layer_path=resolved_layer_path,
-            feature_layer_requested=feature_layer,
-            save_static=save_static,
-            save_dash_artifact=save_dash_artifact,
-            subsample_state=subsample_state,
-            run_id=run_id,
-        )
 
 # ---------------------------------------------------------- #
 if __name__ == "__main__":
@@ -579,10 +584,10 @@ if __name__ == "__main__":
     parser.add_argument("--tsne_feature_space", type=str, default="layer",
                         choices=["layer", "pixels"],
                         help="Feature space for t-SNE: arbitrary layer hook or raw pixels.")
-    parser.add_argument("--tsne_feature_layer", type=str, default="penultimate",
-                        help=("Layer alias/path used when --tsne_feature_space layer. "
+    parser.add_argument("--tsne_feature_layer", type=str, nargs="+", default=["penultimate"],
+                        help=("Layer alias/path(s) used when --tsne_feature_space layer. "
                               "Aliases: penultimate, logits, conv1, conv2, block1, block2 "
-                              "(or an explicit module path like layer2.0)."))
+                              "(or explicit module paths like layer2.0)."))
     parser.add_argument("--tsne_stages", type=str, nargs="+", default=["exact"],
                         choices=["exact", "quantized", "approximate"],
                         help="Stages to visualise: exact, quantized, approximate.")
@@ -615,7 +620,7 @@ if __name__ == "__main__":
             seed=args.tsne_seed,
             show_misclassifications=args.show_misclassifications,
             feature_space=args.tsne_feature_space,
-            feature_layer=args.tsne_feature_layer,
+            feature_layers=args.tsne_feature_layer,
             stages=args.tsne_stages,
             tsne_multiplier_paths=args.tsne_multiplier_path,
             bit_width=args.bit_width,
